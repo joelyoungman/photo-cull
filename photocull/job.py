@@ -22,7 +22,7 @@ import numpy as np
 from . import photos, quality
 
 ANALYSIS_V = 2  # bump to re-analyse every shot after changing what we measure
-WORKERS = 2  # MacBook Neo: 2 performance cores; more threads only make the fan and Drive downloads fight
+WORKERS = 2  # at most 2 cores busy (measured: 1.7 on average); the rest of the computer stays free
 THUMB_PX = {"s": 400, "l": quality.ANALYSE_PX}  # RAW previews are only 1600-1900 px anyway
 THUMB_DAYS = 60  # previews of shoots not opened for this long are deleted (marks are kept; they rebuild on reopen)
 SELECTS = "Selects"
@@ -99,7 +99,22 @@ def gentle():
     try:
         import cv2
 
-        cv2.setNumThreads(1)
+        cv2.setNumThreads(1)  # no hidden extra threads inside OpenCV
+    except Exception:
+        pass
+
+
+def background_thread():
+    """Mark the calling (analysis) thread as background work. On a Mac this is the 'utility' quality of service:
+    macOS runs it on the efficiency cores when it can, gives the screen and browser first call on the fast
+    cores, and slows it down further if the laptop gets warm. Threads it starts (MediaPipe's) inherit it."""
+    if sys.platform != "darwin":
+        return
+    try:
+        import ctypes
+
+        libc = ctypes.CDLL("/usr/lib/libSystem.dylib")
+        libc.pthread_set_qos_class_self_np(ctypes.c_uint(0x11), ctypes.c_int(0))  # QOS_CLASS_UTILITY
     except Exception:
         pass
 
@@ -184,7 +199,7 @@ class Job:
                     self.db.execute("UPDATE shots SET files = ? WHERE key = ?", (json.dumps(shot.files), key))
         p.update(phase="analysing", total=len(todo))
         self._invalidate()
-        with ThreadPoolExecutor(WORKERS) as pool:
+        with ThreadPoolExecutor(WORKERS, initializer=background_thread) as pool:
             for row in pool.map(self._measure, todo):
                 if self._stop.is_set():
                     break

@@ -21,21 +21,29 @@ def call(path, body=None):
         return json.load(r)
 
 
-def rss_mb(pid):
-    out = subprocess.run(["ps", "-o", "rss=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
-    return int(out) / 1024 if out else 0
+def usage(pid):
+    """(memory MB, CPU % where 100 = one core fully busy) of a process."""
+    out = subprocess.run(["ps", "-o", "rss=,%cpu=", "-p", str(pid)], capture_output=True, text=True).stdout.split()
+    return (int(out[0]) / 1024, float(out[1].replace(",", "."))) if len(out) == 2 else (0, 0)
+
+
+CORES = os.cpu_count() or 1
+MAX_CORES_BUSY = 2.5  # 2 analysis workers plus a little for the web page: never the whole CPU
 
 
 def analyse(shoot, pid):
-    """Open a shoot and wait for the analysis: (progress, peak MB of the Photo Cull process)."""
+    """Open a shoot and wait for the analysis: (progress, peak MB, CPU samples in cores busy)."""
     start = time.time()
     call("/api/open", {"path": shoot})
-    peak = 0
+    peak, cpu = 0, []
     while True:
         p = call("/api/status")["job"]["progress"]
-        peak = max(peak, rss_mb(pid))
+        mb, pct = usage(pid)
+        peak = max(peak, mb)
+        if p["phase"] == "analysing":
+            cpu.append(pct / 100)
         if p["phase"] in ("done", "failed", "stopped") and p["started"] and p["started"] >= start - 1:
-            return p, peak
+            return p, peak, cpu
         if time.time() - start > 900:
             sys.exit(f"analysis took too long: {p}")
         time.sleep(0.5)
@@ -53,7 +61,7 @@ def main(shoot, big=None):
     page = urllib.request.urlopen(urllib.request.Request(BASE + "/"), timeout=10).read()
     assert b"Photo Cull" in page, "review page missing"
 
-    p, peak = analyse(shoot, pid)
+    p, peak, _ = analyse(shoot, pid)
     assert p["phase"] == "done", p
     shots = {s["name"]: s for s in call("/api/shots")["shots"]}
     for s in shots.values():
@@ -81,8 +89,13 @@ def main(shoot, big=None):
                f"blur / eyes closed / dark flagged, RW2 + ARW read, picks copied to Selects with a rating sidecar\n")
     if big:
         n = len(os.listdir(big))
-        bp, bpeak = analyse(big, pid)
+        bp, bpeak, cpu = analyse(big, pid)
         assert bp["phase"] == "done" and not bp["errors"], bp
+        busy = sorted(cpu)
+        steady = busy[int(len(busy) * 0.9)] if busy else 0  # 90th percentile: ignores one-off spikes
+        summary += (f"- CPU while analysing: {sum(busy) / max(1, len(busy)):.1f} cores busy on average, "
+                    f"{steady:.1f} at the 90th percentile, of {CORES} on this Mac (limit {MAX_CORES_BUSY})\n")
+        assert steady <= MAX_CORES_BUSY, f"analysis kept {steady:.1f} cores busy"
         groups = {s["group"] for s in call("/api/shots")["shots"]}
         assert len(groups) == n // 3, f"{len(groups)} groups for {n} photos in bursts of 3"
         summary += (f"- speed: {n} full-size 24 MP JPEGs in {bp['seconds']} s = {bp['seconds'] / n:.2f} s per photo "

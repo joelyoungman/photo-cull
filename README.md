@@ -9,6 +9,11 @@ charge: you go through with the keyboard, pick and star what you want, and copy 
 **Your originals are never changed, moved or deleted.** Photo Cull only reads them. The one thing it writes inside
 your shoot folder is the Selects folder, and only when you ask. It never overwrites a file there.
 
+> **Not yet tried on a real Mac.** So far Photo Cull has only been tested automatically, on GitHub's virtual
+> Apple Silicon Macs: installing from the zip, analysing sample photos, and the review page's controls through its
+> API. Nobody has yet double-clicked the installer on a real MacBook, used the folder picker or Photoshop hand-off,
+> or culled a real shoot from Google Drive with it. Please report anything odd.
+
 ## Install (Mac)
 
 1. Download **PhotoCull-mac.zip** from the [latest release](../../releases/latest) and double-click it to unzip.
@@ -101,7 +106,10 @@ storage.
   listens on this computer.
 - `mac/` holds the installer, the app launcher and the icon. `scripts/build_zip.py` builds the download.
 
-Everything runs on the CPU and is sized for a MacBook Neo (A18 Pro, 8 GB). The GitHub Actions test installs from
+Everything runs on the CPU and is sized for a MacBook Neo (A18 Pro, 8 GB). Analysis never uses the whole processor:
+it runs 2 workers (measured at about 2 cores busy at most), at low priority. On a Mac they're marked as background
+work, so macOS keeps the fast cores free for the screen and browser and slows the analysis if the laptop gets warm.
+The Mac test fails if analysis keeps more than 2.5 cores busy. The GitHub Actions test installs from
 the zip on an Apple Silicon Mac, analyses a sample shoot and a set of full-size 24 MP photos, and reports speed and
 memory in the run summary. Model and library licences, all of which allow commercial use, are listed in
 [THIRD-PARTY.md](THIRD-PARTY.md).
