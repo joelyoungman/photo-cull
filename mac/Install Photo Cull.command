@@ -86,7 +86,7 @@ for s in 16 32 128 256 512; do
   sips -z $((s*2)) $((s*2)) "$HERE/app/mac/icon.png" --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null 2>&1 || true
 done
 if iconutil -c icns "$ICONSET" -o "$BUNDLE/Contents/Resources/applet.icns" 2>/dev/null; then
-  plutil -remove CFBundleIconName "$PLIST" 2>/dev/null || true  # else macOS shows the icon in Assets.car
+  plutil -remove CFBundleIconName "$PLIST" >/dev/null 2>&1 || true  # else macOS shows the icon in Assets.car
   rm -f "$BUNDLE/Contents/Resources/Assets.car"
   plutil -replace CFBundleIconFile -string "applet" "$PLIST"
 fi

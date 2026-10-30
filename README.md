@@ -9,10 +9,11 @@ charge: you go through with the keyboard, pick and star what you want, and copy 
 **Your originals are never changed, moved or deleted.** Photo Cull only reads them. The one thing it writes inside
 your shoot folder is the Selects folder, and only when you ask. It never overwrites a file there.
 
-> **Not yet tried on a real Mac.** So far Photo Cull has only been tested automatically, on GitHub's virtual
-> Apple Silicon Macs: installing from the zip, analysing sample photos, and the review page's controls through its
-> API. Nobody has yet double-clicked the installer on a real MacBook, used the folder picker or Photoshop hand-off,
-> or culled a real shoot from Google Drive with it. Please report anything odd.
+> **Early days on a real Mac.** Photo Cull is tested automatically on GitHub's virtual Apple Silicon Macs
+> (macOS 15 and 26): installing from the zip, opening the app, analysing sample photos, and the review page's controls
+> through its API. On a real MacBook Neo the installer has run end to end, and that's how we found and fixed the
+> "install Rosetta?" prompt (fixed in v0.1.2). The folder picker, the Photoshop hand-off and a real shoot from Google
+> Drive haven't been tried there yet. Please report anything odd.
 
 ## Install (Mac)
 
