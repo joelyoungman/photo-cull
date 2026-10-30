@@ -1,0 +1,91 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  mac-install:
+    # Apple Silicon runner: install from the zip exactly as the photographer would, then use the app.
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the zip
+        run: python3 scripts/build_zip.py
+
+      - name: Unzip like a download
+        run: |
+          mkdir -p "$RUNNER_TEMP/Downloads"
+          ditto -x -k dist/PhotoCull-mac.zip "$RUNNER_TEMP/Downloads"
+          ls -la "$RUNNER_TEMP/Downloads/Photo Cull"
+
+      - name: Run the installer
+        env:
+          PHOTOCULL_APPS_DIR: ${{ runner.temp }}/Applications
+          PHOTOCULL_NO_OPEN: "1"
+        run: |
+          /usr/bin/time -l "$RUNNER_TEMP/Downloads/Photo Cull/Install Photo Cull.command" 2>&1 | tail -40
+          test -x "$RUNNER_TEMP/Applications/Photo Cull.app/Contents/MacOS/Photo Cull"
+          plutil -lint "$RUNNER_TEMP/Applications/Photo Cull.app/Contents/Info.plist"
+          du -sh "$HOME/Library/Application Support/Photo Cull"
+
+      - name: Make a sample shoot (public-domain and CC0 photos only)
+        run: |
+          "$HOME/Library/Application Support/Photo Cull/venv/bin/python" tests/make_samples.py "$RUNNER_TEMP/shoot" --raw
+          "$HOME/Library/Application Support/Photo Cull/venv/bin/python" tests/make_samples.py "$RUNNER_TEMP/speed" --big 90
+          "$HOME/Library/Application Support/Photo Cull/venv/bin/python" - <<'EOF'
+          import os, sys
+          sys.path.insert(0, os.path.expanduser("~/Library/Application Support/Photo Cull/app"))
+          from photocull import photos
+          shoot = os.path.join(os.environ["RUNNER_TEMP"], "shoot")
+          data, _ = photos._raw_preview(os.path.join(shoot, "cardC", "DSC09009.ARW"))
+          open(os.path.join(shoot, "cardC", "DSC09009.JPG"), "wb").write(data)  # a RAW + JPEG pair
+          EOF
+
+      - name: Open the app and cull through its API
+        env:
+          PHOTOCULL_NO_BROWSER: "1"
+        run: |
+          "$RUNNER_TEMP/Applications/Photo Cull.app/Contents/MacOS/Photo Cull"
+          python3 tests/ci_check.py "$RUNNER_TEMP/shoot" "$RUNNER_TEMP/speed"
+
+      - name: Photo Cull log
+        if: always()
+        run: cat "$HOME/Library/Logs/Photo Cull.log" || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PhotoCull-mac
+          path: dist/PhotoCull-mac.zip
+
+  windows-dev:
+    # The development setup on Windows: same code, unit tests.
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.13.6"
+      - run: uv sync --frozen
+      - run: uv run pytest -q
+
+  release:
+    # A v* tag that passes the Mac test publishes the zip as a GitHub release.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [mac-install, windows-dev]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: PhotoCull-mac
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" PhotoCull-mac.zip --repo "$GITHUB_REPOSITORY" --title "Photo Cull $GITHUB_REF_NAME" --notes "Download PhotoCull-mac.zip, unzip, and double-click Install Photo Cull.command. See the README for the one-time 'Open Anyway' step."

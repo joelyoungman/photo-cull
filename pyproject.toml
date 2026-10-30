@@ -1,0 +1,23 @@
+[project]
+name = "photo-cull"
+version = "0.1.0"
+description = "Pick the best photos from one shoot, quickly. Local, no cloud."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "numpy",
+    "pillow",
+    "pillow-heif",
+    "rawpy",
+    "mediapipe",  # brings opencv-contrib-python (YuNet face detector lives in cv2 too)
+    "imagehash",
+    "exifread",
+    "starlette",
+    "uvicorn",
+]
+
+[dependency-groups]
+dev = ["pytest"]
+
+[tool.uv]
+package = false

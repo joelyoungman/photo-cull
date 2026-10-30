@@ -1,0 +1,555 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Photo Cull</title>
+<style>
+:root {
+  --bg: #111214; --panel: #1b1c1f; --panel2: #24262a; --line: #33363b; --text: #e8e8ea; --muted: #9a9ca3;
+  --accent: #5b9dff; --best: #2fb36f; --pick: #2fb36f; --reject: #e5534b; --warn: #f2c14e; --star: #f2c14e;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body { margin: 0; font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; background: var(--bg); color: var(--text); overflow: hidden; }
+button { font: inherit; color: var(--text); background: var(--panel2); border: 1px solid var(--line); border-radius: 7px; padding: 6px 12px; cursor: pointer; }
+button:hover { border-color: #555a62; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+button.on { border-color: var(--accent); color: #fff; background: #23344f; }
+select, input[type=text] { font: inherit; color: var(--text); background: #0d0e10; border: 1px solid var(--line); border-radius: 7px; padding: 6px 8px; }
+kbd { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--panel2); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 1px 5px; }
+.hidden { display: none !important; }
+
+header { height: 52px; display: flex; align-items: center; gap: 10px; padding: 0 14px; background: var(--panel); border-bottom: 1px solid var(--line); }
+header .title { font-weight: 700; }
+header .folder { color: var(--muted); max-width: 26vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+header .spacer { flex: 1; }
+#progress { color: var(--muted); font-size: 13px; white-space: nowrap; }
+#progress .bar { display: inline-block; vertical-align: middle; width: 120px; height: 6px; background: var(--panel2); border-radius: 3px; overflow: hidden; margin-right: 6px; }
+#progress .bar i { display: block; height: 100%; background: var(--accent); width: 0; }
+#counts { color: var(--muted); font-size: 13px; white-space: nowrap; }
+#counts b { color: var(--text); }
+
+#start { position: absolute; inset: 52px 0 0 0; display: flex; align-items: center; justify-content: center; }
+#start .box { width: min(560px, 92vw); text-align: center; }
+#start h1 { font-size: 26px; margin: 0 0 6px; }
+#start p { color: var(--muted); margin: 0 0 20px; }
+#start .big { font-size: 17px; padding: 12px 26px; }
+#start .recent { margin-top: 28px; text-align: left; }
+#start .recent h2 { font-size: 13px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .05em; }
+#start .recent button { display: block; width: 100%; text-align: left; margin: 6px 0; padding: 10px 12px; }
+#start .recent small { color: var(--muted); display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#start .typed { margin-top: 18px; display: flex; gap: 8px; }
+#start .typed input { flex: 1; }
+
+#work { position: absolute; inset: 52px 0 0 0; display: grid; grid-template-columns: 1fr 300px; }
+#stage { position: relative; display: grid; grid-template-rows: 1fr auto auto; min-width: 0; min-height: 0; }
+#viewer { position: relative; overflow: hidden; background: #0a0a0b; min-height: 0; display: flex; align-items: center; justify-content: center; }
+#viewer img.main { max-width: 100%; max-height: 100%; object-fit: contain; display: block; user-select: none; }
+#viewer.zoom { cursor: move; display: block; }
+#viewer.zoom img.main { max-width: none; max-height: none; position: absolute; }
+#boxes { position: absolute; pointer-events: none; }
+#boxes div { position: absolute; border: 2px solid rgba(47,179,111,.9); border-radius: 4px; }
+#boxes div.shut { border-color: var(--reject); }
+.badges { position: absolute; top: 12px; left: 12px; right: 12px; display: flex; flex-wrap: wrap; gap: 6px; pointer-events: none; }
+.badge { background: rgba(0,0,0,.72); border-radius: 6px; padding: 4px 9px; font-size: 13px; }
+.badge.best { background: var(--best); color: #fff; font-weight: 600; }
+.badge.problem { background: rgba(120,25,22,.9); color: #ffd2cf; }
+.badge.pick { background: var(--pick); color: #fff; font-weight: 700; }
+.badge.reject { background: var(--reject); color: #fff; font-weight: 700; }
+.badge.stars { color: var(--star); letter-spacing: 1px; }
+#info { padding: 7px 14px; color: var(--muted); font-size: 13px; background: var(--panel); border-top: 1px solid var(--line); display: flex; gap: 16px; flex-wrap: wrap; }
+#info b { color: var(--text); font-weight: 600; }
+#strip { display: flex; gap: 6px; padding: 8px 10px; background: var(--panel); border-top: 1px solid var(--line); overflow-x: auto; min-height: 104px; align-items: center; }
+#strip .label { color: var(--muted); font-size: 12px; writing-mode: vertical-rl; transform: rotate(180deg); }
+
+.thumb { position: relative; flex: none; width: 128px; height: 86px; border-radius: 6px; overflow: hidden; border: 2px solid transparent; background: #000; cursor: pointer; }
+.thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.thumb.cur { border-color: var(--accent); }
+.thumb.best::after { content: "★ best"; position: absolute; top: 3px; left: 3px; background: var(--best); color: #fff; font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 4px; }
+.thumb .flag { position: absolute; bottom: 3px; right: 3px; font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 4px; color: #fff; }
+.thumb .flag.pick { background: var(--pick); }
+.thumb .flag.reject { background: var(--reject); }
+.thumb.rejected img { opacity: .35; }
+.thumb .warn { position: absolute; top: 3px; right: 3px; background: rgba(120,25,22,.9); color: #ffd2cf; font-size: 10px; padding: 1px 5px; border-radius: 4px; }
+.thumb .stars { position: absolute; bottom: 3px; left: 3px; color: var(--star); font-size: 10px; background: rgba(0,0,0,.6); padding: 0 4px; border-radius: 4px; }
+
+#side { border-left: 1px solid var(--line); background: var(--panel); display: grid; grid-template-rows: auto 1fr auto; min-height: 0; }
+#side .controls { padding: 10px; display: grid; gap: 8px; border-bottom: 1px solid var(--line); }
+#side .controls .row { display: flex; gap: 6px; }
+#side .controls .row > * { flex: 1; }
+#list { overflow-y: auto; padding: 8px; }
+#list .group { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; padding: 6px; margin-bottom: 8px; border-radius: 8px; background: #151618; }
+#list .group.multi { background: #1c2230; }
+#list .group .ghead { grid-column: 1 / -1; font-size: 11px; color: var(--muted); }
+#list .thumb { width: 100%; height: 82px; }
+#side .bottom { padding: 10px; border-top: 1px solid var(--line); display: grid; gap: 8px; }
+
+#compare { position: absolute; inset: 0; background: #0a0a0b; display: grid; gap: 6px; padding: 6px; z-index: 3; }
+#compare .cell { position: relative; overflow: hidden; border: 3px solid transparent; border-radius: 6px; background: #000; display: flex; align-items: center; justify-content: center; cursor: pointer; min-height: 0; }
+#compare .cell img { max-width: 100%; max-height: 100%; object-fit: contain; }
+#compare .cell.cur { border-color: var(--accent); }
+#compare .cell .badges { top: 6px; left: 6px; }
+
+#grid { position: absolute; inset: 0; background: var(--bg); overflow-y: auto; padding: 10px; z-index: 3; display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; align-content: start; }
+#grid .thumb { width: 100%; height: 130px; }
+
+.modal { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; z-index: 10; }
+.modal .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 20px 22px; width: min(620px, 94vw); max-height: 86vh; overflow: auto; }
+.modal h2 { margin: 0 0 10px; font-size: 18px; }
+.modal ul { margin: 8px 0; padding-left: 20px; max-height: 40vh; overflow: auto; color: var(--muted); }
+.modal .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.modal table { border-collapse: collapse; width: 100%; }
+.modal td { padding: 4px 6px; vertical-align: top; }
+.modal td:first-child { white-space: nowrap; }
+.empty { color: var(--muted); padding: 40px; text-align: center; }
+</style>
+</head>
+<body>
+<header>
+  <span class="title">Photo Cull</span>
+  <span class="folder" id="folderName"></span>
+  <button id="chooseBtn">Choose shoot…</button>
+  <span class="spacer"></span>
+  <span id="progress"></span>
+  <span id="counts"></span>
+  <button id="helpBtn" title="Keyboard shortcuts (?)">?</button>
+  <button id="quitBtn" title="Stop Photo Cull">Quit</button>
+</header>
+
+<section id="start" class="hidden">
+  <div class="box">
+    <h1>Which shoot are we culling?</h1>
+    <p>Choose the folder of one job. Photo Cull looks at every photo in it (and its sub-folders), groups bursts and look-alikes, and suggests the best of each group. Your originals are never changed.</p>
+    <button class="primary big" id="chooseBig">Choose shoot folder…</button>
+    <div class="typed"><input type="text" id="typedPath" placeholder="…or paste a folder path here"><button id="typedGo">Open</button></div>
+    <div class="recent hidden" id="recentBox"><h2>Recent shoots</h2><div id="recent"></div></div>
+  </div>
+</section>
+
+<section id="work" class="hidden">
+  <div id="stage">
+    <div id="viewer">
+      <img class="main" id="mainImg" alt="">
+      <div id="boxes"></div>
+      <div class="badges" id="badges"></div>
+      <div id="compare" class="hidden"></div>
+      <div id="grid" class="hidden"></div>
+    </div>
+    <div id="info"></div>
+    <div id="strip"></div>
+  </div>
+  <aside id="side">
+    <div class="controls">
+      <div class="row">
+        <button id="modeAll" class="on" title="Every photo">All photos</button>
+        <button id="modeBest" title="Only the suggested best of each group, plus photos on their own">Best of each</button>
+      </div>
+      <select id="filter" title="Show only…">
+        <option value="all">Show: everything</option>
+        <option value="unmarked">Not decided yet</option>
+        <option value="pick">Picks</option>
+        <option value="reject">Rejects</option>
+        <option value="rated">Rated 3★ and up</option>
+        <option value="problems">Possible problems</option>
+        <option value="eyes">Eyes closed</option>
+        <option value="blurry">Blurry / out of focus</option>
+      </select>
+      <div class="row">
+        <button id="compareBtn" title="Compare the group side by side (C)">Compare <kbd>C</kbd></button>
+        <button id="gridBtn" title="Grid of all photos (G)">Grid <kbd>G</kbd></button>
+      </div>
+    </div>
+    <div id="list"></div>
+    <div class="bottom">
+      <label style="color:var(--muted);font-size:13px"><input type="checkbox" id="advance" checked> Move to next photo after P / X</label>
+      <button class="primary" id="selectsBtn">Copy picks to Selects…</button>
+    </div>
+  </aside>
+</section>
+
+<div class="modal hidden" id="modal"><div class="card" id="modalCard"></div></div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const H = {"Content-Type": "application/json", "X-Photo-Cull": "1"};
+let data = {shots: [], path: null};
+let view = [];          // shots in the order shown, after mode + filter
+let cur = 0;            // index into view
+let mode = "all";       // all | best
+let overlay = null;     // null | compare | grid
+let compareSel = 0;
+let zoom = false, showBoxes = false;
+let lastProgress = null;
+
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} : {method: "POST", headers: H, body: JSON.stringify(body)});
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+}
+function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; }
+function img(key, size) { return "/img?size=" + size + "&key=" + encodeURIComponent(key); }
+function stars(n) { return n ? "★".repeat(n) : ""; }
+
+// ---------- start screen ----------
+async function refreshStatus() {
+  const s = await api("/api/status");
+  if (!s.job) {
+    $("start").classList.remove("hidden"); $("work").classList.add("hidden"); $("folderName").textContent = "";
+    $("recent").replaceChildren();
+    for (const r of s.recent) {
+      const b = el("button"); b.append(el("span", "", r.name), el("small", "", r.path));
+      b.onclick = () => openPath(r.path);
+      $("recent").append(b);
+    }
+    $("recentBox").classList.toggle("hidden", !s.recent.length);
+    return false;
+  }
+  return true;
+}
+async function choose() {
+  $("chooseBtn").disabled = $("chooseBig").disabled = true;
+  try {
+    const r = await api("/api/choose", {});
+    if (!r.cancelled) await opened();
+  } catch (e) { alert("Couldn't open that folder: " + e.message); }
+  finally { $("chooseBtn").disabled = $("chooseBig").disabled = false; }
+}
+async function openPath(path) {
+  try { await api("/api/open", {path}); await opened(); }
+  catch (e) { alert("Couldn't open that folder: " + e.message); }
+}
+async function opened() {
+  $("start").classList.add("hidden"); $("work").classList.remove("hidden");
+  cur = 0; data = {shots: []};
+  await load(true);
+}
+
+// ---------- data ----------
+async function load(first) {
+  const keep = view[cur] && view[cur].key;
+  const d = await api("/api/shots");
+  data = d;
+  $("folderName").textContent = d.path;
+  showProgress(d.progress);
+  rebuild(keep);
+  if (first) render();
+}
+function showProgress(p) {
+  lastProgress = p;
+  const box = $("progress"); box.replaceChildren();
+  if (p.phase === "analysing" || p.phase === "scanning") {
+    const bar = el("span", "bar"); const fill = el("i"); bar.append(fill);
+    fill.style.width = (p.total ? 100 * p.done / p.total : 0) + "%";
+    box.append(bar, p.phase === "scanning" ? "Looking for photos…" :
+      (p.downloading ? "Downloading from Google Drive… " : "Analysing ") + p.done + " / " + p.total);
+  } else if (p.phase === "failed") {
+    box.append("Analysis stopped: " + p.current);
+  } else if (p.phase === "done" && p.errors) {
+    box.append(p.errors + " couldn't be read");
+  }
+}
+function matches(s, f) {
+  if (f === "all") return true;
+  if (f === "unmarked") return !s.flag;
+  if (f === "pick") return s.flag === "pick";
+  if (f === "reject") return s.flag === "reject";
+  if (f === "rated") return s.rating >= 3;
+  const p = s.problems || [];
+  if (f === "problems") return p.length > 0 || !!s.error;
+  if (f === "eyes") return p.some(x => x.startsWith("eyes closed"));
+  if (f === "blurry") return p.includes("blurry") || p.includes("faces out of focus");
+  return true;
+}
+function rebuild(keepKey) {
+  const f = $("filter").value;
+  view = data.shots.filter(s => (mode === "all" || s.suggested || s.group_size === 1 || s.group == null) && matches(s, f));
+  const i = keepKey ? view.findIndex(s => s.key === keepKey) : -1;
+  cur = i >= 0 ? i : Math.min(cur, Math.max(0, view.length - 1));
+  renderList(); renderCounts();
+  if (!keepKey || i < 0) render(); else { renderStrip(); renderBadges(); }
+}
+function groupOf(s) { return s && s.group != null ? data.shots.filter(x => x.group === s.group) : (s ? [s] : []); }
+function renderCounts() {
+  const picks = data.shots.filter(s => s.flag === "pick").length;
+  const rejects = data.shots.filter(s => s.flag === "reject").length;
+  const groups = new Set(data.shots.filter(s => s.group_size > 1).map(s => s.group)).size;
+  const c = $("counts"); c.replaceChildren();
+  const b = t => el("b", "", String(t));
+  c.append(b(data.shots.length), " photos · ", b(groups), " groups · ", b(picks), " picks · ", b(rejects), " rejects");
+}
+
+// ---------- rendering ----------
+function thumbEl(s, isCur) {
+  const t = el("div", "thumb" + (isCur ? " cur" : "") + (s.suggested ? " best" : "") + (s.flag === "reject" ? " rejected" : ""));
+  if (!s.error) { const i = el("img"); i.loading = "lazy"; i.src = img(s.key, "s"); i.alt = s.name; t.append(i); }
+  else t.append(el("div", "warn", "can't read"));
+  if (s.flag) t.append(el("span", "flag " + s.flag, s.flag === "pick" ? "PICK" : "REJECT"));
+  if (s.rating) t.append(el("span", "stars", stars(s.rating)));
+  if ((s.problems || []).length && !s.suggested) t.append(el("span", "warn", "!"));
+  t.title = s.name + ((s.problems || []).length ? " — " + s.problems.join(", ") : "");
+  return t;
+}
+function renderList() {
+  const list = $("list"); list.replaceChildren();
+  if (!view.length) { list.append(el("div", "empty", data.shots.length ? "Nothing matches this filter." : "No photos analysed yet…")); return; }
+  let box = null, lastGroup = undefined;
+  view.forEach((s, i) => {
+    if (s.group !== lastGroup || s.group == null) {
+      box = el("div", "group" + (s.group_size > 1 ? " multi" : ""));
+      if (s.group_size > 1) box.append(el("div", "ghead", "Group of " + s.group_size));
+      list.append(box); lastGroup = s.group;
+    }
+    const t = thumbEl(s, i === cur); t.dataset.i = i;
+    t.onclick = () => go(i);
+    box.append(t);
+  });
+  const c = list.querySelector(".thumb.cur"); if (c) c.scrollIntoView({block: "nearest"});
+}
+function renderBadges() {
+  const s = view[cur]; const b = $("badges"); b.replaceChildren();
+  if (!s) return;
+  b.append(...badgesFor(s));
+}
+function badgesFor(s) {
+  const out = [];
+  if (s.flag === "pick") out.push(el("span", "badge pick", "PICK"));
+  if (s.flag === "reject") out.push(el("span", "badge reject", "REJECT"));
+  if (s.rating) out.push(el("span", "badge stars", stars(s.rating)));
+  if (s.suggested) out.push(el("span", "badge best", "★ Suggested: " + (s.reasons.join(", ") || "best of group")));
+  for (const p of s.problems || []) out.push(el("span", "badge problem", p));
+  if (s.error) out.push(el("span", "badge problem", s.error));
+  return out;
+}
+function render() {
+  const s = view[cur];
+  const m = $("mainImg");
+  if (!s) { m.removeAttribute("src"); $("info").replaceChildren(); $("strip").replaceChildren(); $("badges").replaceChildren(); $("boxes").replaceChildren(); return; }
+  if (s.error) m.removeAttribute("src");
+  else {  // the small copy shows at once; the big one replaces it when it has loaded
+    m.src = img(s.key, "s");
+    const big = new Image();
+    big.onload = () => { if (view[cur] === s) { m.src = big.src; renderBoxes(); } };
+    big.src = img(s.key, "l");
+  }
+  m.alt = s.name;
+  setZoom(false);
+  renderBadges(); renderInfo(); renderStrip(); renderBoxes();
+  renderList();
+  if (overlay === "compare") renderCompare();
+  // warm the next photo
+  const n = view[cur + 1]; if (n && !n.error) (new Image()).src = img(n.key, "l");
+}
+function renderInfo() {
+  const s = view[cur]; const info = $("info"); info.replaceChildren();
+  const add = (label, value) => { if (value == null || value === "") return; const sp = el("span"); if (label) sp.append(label + " "); sp.append(el("b", "", String(value))); info.append(sp); };
+  add("", s.name);
+  add("Files:", s.files.map(f => f.split("/").pop().split(".").pop().toUpperCase()).join(" + "));
+  if (s.taken) add("Taken:", s.taken.replace("T", " ").slice(0, 22));
+  add("Camera:", s.camera);
+  if (s.exposure || s.fnumber) add("", [s.exposure && s.exposure + "s", s.fnumber && "f/" + s.fnumber, s.iso && "ISO " + s.iso, s.focal && s.focal + "mm"].filter(Boolean).join("  "));
+  if (s.main_faces) add("Faces:", s.main_faces + " · eyes open " + s.eyes_open + " · smiling " + s.smiling);
+  if (s.group_size > 1) add("Group:", (groupOf(s).indexOf(s) + 1) + " of " + s.group_size);
+  add("", (cur + 1) + " / " + view.length);
+}
+function renderStrip() {
+  const s = view[cur]; const strip = $("strip"); strip.replaceChildren();
+  if (!s) return;
+  const g = groupOf(s);
+  strip.append(el("span", "label", g.length > 1 ? "This group" : "On its own"));
+  for (const m of g) {
+    const t = thumbEl(m, m.key === s.key);
+    t.onclick = () => { const i = view.findIndex(v => v.key === m.key); if (i >= 0) go(i); else { mode = "all"; $("filter").value = "all"; setMode("all", m.key); } };
+    strip.append(t);
+  }
+}
+function renderBoxes() {
+  const s = view[cur]; const box = $("boxes"); box.replaceChildren();
+  if (!showBoxes || !s || !s.face_boxes || zoom) return;
+  const m = $("mainImg");
+  const place = () => {
+    const r = m.getBoundingClientRect(), v = $("viewer").getBoundingClientRect();
+    Object.assign(box.style, {left: (r.left - v.left) + "px", top: (r.top - v.top) + "px", width: r.width + "px", height: r.height + "px"});
+    box.replaceChildren();
+    for (const [x, y, w, h, shut] of s.face_boxes) {
+      const d = el("div", shut ? "shut" : "");
+      Object.assign(d.style, {left: 100 * x + "%", top: 100 * y + "%", width: 100 * w + "%", height: 100 * h + "%"});
+      box.append(d);
+    }
+  };
+  if (m.complete) place(); else m.onload = place;
+}
+function renderCompare() {
+  const s = view[cur]; const g = groupOf(s); const c = $("compare"); c.replaceChildren();
+  const n = g.length, cols = Math.ceil(Math.sqrt(n * 1.5)), rows = Math.ceil(n / cols);
+  c.style.gridTemplateColumns = "repeat(" + cols + ", 1fr)"; c.style.gridTemplateRows = "repeat(" + rows + ", 1fr)";
+  compareSel = Math.max(0, g.findIndex(x => x.key === s.key));
+  g.forEach((m, i) => {
+    const cell = el("div", "cell" + (i === compareSel ? " cur" : ""));
+    if (!m.error) { const im = el("img"); im.src = img(m.key, "l"); im.alt = m.name; cell.append(im); }
+    const b = el("div", "badges"); b.append(el("span", "badge", m.name), ...badgesFor(m)); cell.append(b);
+    cell.onclick = () => { const j = view.findIndex(v => v.key === m.key); if (j >= 0) { cur = j; render(); } };
+    cell.ondblclick = () => toggleOverlay(null);
+    c.append(cell);
+  });
+}
+function renderGrid() {
+  const g = $("grid"); g.replaceChildren();
+  view.forEach((s, i) => { const t = thumbEl(s, i === cur); t.onclick = () => { cur = i; toggleOverlay(null); render(); }; g.append(t); });
+  const c = g.querySelector(".thumb.cur"); if (c) c.scrollIntoView({block: "center"});
+}
+function toggleOverlay(which) {
+  overlay = overlay === which ? null : which;
+  $("compare").classList.toggle("hidden", overlay !== "compare");
+  $("grid").classList.toggle("hidden", overlay !== "grid");
+  $("compareBtn").classList.toggle("on", overlay === "compare");
+  $("gridBtn").classList.toggle("on", overlay === "grid");
+  if (overlay === "compare") renderCompare();
+  if (overlay === "grid") renderGrid();
+}
+function setMode(m, keepKey) {
+  mode = m;
+  $("modeAll").classList.toggle("on", m === "all"); $("modeBest").classList.toggle("on", m === "best");
+  rebuild(keepKey || (view[cur] && view[cur].key)); render();
+}
+
+// ---------- zoom ----------
+function setZoom(on, ev) {
+  zoom = on && !!view[cur] && !view[cur].error;
+  const v = $("viewer"), m = $("mainImg");
+  v.classList.toggle("zoom", zoom);
+  if (!zoom) { m.style.left = m.style.top = ""; renderBoxes(); return; }
+  $("boxes").replaceChildren();
+  const pan = e => {
+    const r = v.getBoundingClientRect();
+    const fx = e ? (e.clientX - r.left) / r.width : .5, fy = e ? (e.clientY - r.top) / r.height : .5;
+    m.style.left = -(m.naturalWidth - r.width) * fx + "px"; m.style.top = -(m.naturalHeight - r.height) * fy + "px";
+  };
+  pan(ev);
+  v.onmousemove = e => zoom && pan(e);
+}
+$("viewer").addEventListener("click", e => { if (e.target === $("mainImg")) setZoom(!zoom, e); });
+
+// ---------- actions ----------
+function go(i) { if (!view.length) return; cur = Math.max(0, Math.min(view.length - 1, i)); render(); }
+function goGroup(dir) {
+  const s = view[cur]; if (!s) return;
+  let i = cur;
+  while (i + dir >= 0 && i + dir < view.length && view[i + dir].group === s.group && s.group != null) i += dir;
+  i += dir;
+  if (i < 0 || i >= view.length) return;
+  // land on the suggested shot of the next group when there is one
+  const g = view[i].group;
+  if (g != null) { const best = view.findIndex(v => v.group === g && v.suggested); if (best >= 0) i = best; else if (dir < 0) while (i > 0 && view[i - 1].group === g) i--; }
+  go(i);
+}
+async function mark(fields) {
+  const targets = overlay === "compare" ? [groupOf(view[cur])[compareSel]] : [view[cur]];
+  const s = targets[0]; if (!s) return;
+  await api("/api/mark", {keys: [s.key], ...fields});
+  for (const t of data.shots) if (t.key === s.key) Object.assign(t, fields);
+  const advance = $("advance").checked && "flag" in fields && fields.flag && overlay !== "compare";
+  const keep = s.key;
+  rebuild(keep);
+  if (advance) { const i = view.findIndex(v => v.key === keep); go((i >= 0 ? i : cur - 1) + 1); }
+  else { render(); }
+}
+async function openFile(app) {
+  const s = view[cur]; if (!s) return;
+  try { await api("/api/openfile", {key: s.key, app}); } catch (e) { alert(e.message); }
+}
+
+function modal(build) {
+  const card = $("modalCard"); card.replaceChildren(); build(card);
+  $("modal").classList.remove("hidden");
+}
+function closeModal() { $("modal").classList.add("hidden"); }
+$("modal").addEventListener("click", e => { if (e.target === $("modal")) closeModal(); });
+
+async function selects() {
+  const picks = data.shots.filter(s => s.flag === "pick");
+  if (!picks.length) { modal(c => { c.append(el("h2", "", "No picks yet"), el("p", "", "Mark the photos you want with P, then copy them here.")); const a = el("div", "actions"); const ok = el("button", "primary", "OK"); ok.onclick = closeModal; a.append(ok); c.append(a); }); return; }
+  const plan = await api("/api/selects", {keys: picks.map(s => s.key), dry_run: true});
+  modal(c => {
+    c.append(el("h2", "", "Copy " + picks.length + " picks to Selects?"));
+    const p = el("p"); p.append("Copies ", el("b", "", String(plan.files.length)), " files (RAW and JPEG together) into:"); c.append(p);
+    c.append(el("p", "", plan.folder));
+    const ul = el("ul"); for (const f of plan.files) ul.append(el("li", "", f.from + (f.exists ? " (already there, skipped)" : "") + (f.to !== f.from.split("/").pop() ? " → " + f.to : ""))); c.append(ul);
+    c.append(el("p", "", "Your originals stay exactly where they are. Nothing is moved or deleted. RAW copies get a small .xmp file with the star rating, which Bridge, Camera Raw and Lightroom show."));
+    const a = el("div", "actions");
+    const cancel = el("button", "", "Cancel"); cancel.onclick = closeModal;
+    const go = el("button", "primary", "Copy " + plan.files.length + " files");
+    go.onclick = async () => {
+      go.disabled = true; go.textContent = "Copying…";
+      try {
+        const r = await api("/api/selects", {keys: picks.map(s => s.key)});
+        c.replaceChildren(el("h2", "", "Done"));
+        c.append(el("p", "", "Copied " + r.copied.length + " files" + (r.skipped.length ? ", " + r.skipped.length + " were already there" : "") + "."));
+        if (r.failed.length) { c.append(el("p", "", "These didn't copy:")); const u = el("ul"); r.failed.forEach(f => u.append(el("li", "", f))); c.append(u); }
+        c.append(el("p", "", r.folder));
+        const aa = el("div", "actions"); const ok = el("button", "primary", "OK"); ok.onclick = closeModal; aa.append(ok); c.append(aa);
+      } catch (e) { go.textContent = "Failed: " + e.message; }
+    };
+    a.append(cancel, go); c.append(a);
+  });
+}
+function help() {
+  modal(c => {
+    c.append(el("h2", "", "Keyboard"));
+    const rows = [["← →", "previous / next photo"], ["↑ ↓", "previous / next group (lands on the suggested best)"], ["P", "pick"], ["X", "reject"], ["U", "undo pick / reject"],
+      ["1 – 5", "star rating"], ["0", "clear stars"], ["C", "compare the group side by side (← → choose, P/X mark)"], ["G", "grid of all photos"],
+      ["Z or click", "zoom to 100% (move the mouse to look around)"], ["F", "show faces (red = eyes closed)"], ["B", "switch All photos / Best of each group"],
+      ["O", "open in Photoshop (RAW opens in Camera Raw)"], ["R", "show in Finder"], ["Esc", "close compare / grid / zoom"]];
+    const t = el("table"); for (const [k, d] of rows) { const tr = el("tr"); const a = el("td"); a.append(el("kbd", "", k)); tr.append(a, el("td", "", d)); t.append(tr); } c.append(t);
+    c.append(el("p", "", "Suggestions are only suggestions: nothing is picked, rejected, moved or deleted unless you do it. Copy picks to Selects copies files; it never moves or deletes originals."));
+    const a = el("div", "actions"); const ok = el("button", "primary", "OK"); ok.onclick = closeModal; a.append(ok); c.append(a);
+  });
+}
+
+document.addEventListener("keydown", e => {
+  if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT" || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (!$("modal").classList.contains("hidden")) { if (e.key === "Escape") closeModal(); return; }
+  if ($("work").classList.contains("hidden")) return;
+  const k = e.key.toLowerCase();
+  if (overlay === "compare" && (k === "arrowleft" || k === "arrowright")) {
+    const g = groupOf(view[cur]); compareSel = (compareSel + (k === "arrowright" ? 1 : g.length - 1)) % g.length;
+    const j = view.findIndex(v => v.key === g[compareSel].key); if (j >= 0) { cur = j; render(); } else renderCompare();
+    e.preventDefault(); return;
+  }
+  const act = {
+    arrowright: () => go(cur + 1), arrowleft: () => go(cur - 1), arrowdown: () => goGroup(1), arrowup: () => goGroup(-1),
+    " ": () => go(cur + 1),
+    p: () => mark({flag: "pick"}), x: () => mark({flag: "reject"}), u: () => mark({flag: ""}),
+    0: () => mark({rating: 0}), 1: () => mark({rating: 1}), 2: () => mark({rating: 2}), 3: () => mark({rating: 3}), 4: () => mark({rating: 4}), 5: () => mark({rating: 5}),
+    c: () => toggleOverlay("compare"), g: () => toggleOverlay("grid"), z: () => setZoom(!zoom),
+    f: () => { showBoxes = !showBoxes; renderBoxes(); }, b: () => setMode(mode === "all" ? "best" : "all"),
+    o: () => openFile("photoshop"), r: () => openFile("reveal"), "?": help,
+    escape: () => { if (zoom) setZoom(false); else if (overlay) toggleOverlay(overlay); },
+    enter: () => { if (overlay === "grid") toggleOverlay(null); },
+  }[k];
+  if (act) { e.preventDefault(); act(); }
+});
+
+$("chooseBtn").onclick = choose; $("chooseBig").onclick = choose;
+$("typedGo").onclick = () => { const p = $("typedPath").value.trim(); if (p) openPath(p); };
+$("typedPath").addEventListener("keydown", e => { if (e.key === "Enter") $("typedGo").click(); });
+$("modeAll").onclick = () => setMode("all"); $("modeBest").onclick = () => setMode("best");
+$("filter").onchange = () => { rebuild(view[cur] && view[cur].key); render(); };
+$("compareBtn").onclick = () => toggleOverlay("compare"); $("gridBtn").onclick = () => toggleOverlay("grid");
+$("selectsBtn").onclick = selects; $("helpBtn").onclick = help;
+$("quitBtn").onclick = async () => { if (confirm("Stop Photo Cull? Your marks are saved; open the app again to carry on.")) { await api("/api/quit", {}).catch(() => {}); document.body.replaceChildren(el("div", "empty", "Photo Cull has stopped. You can close this tab.")); } };
+window.addEventListener("resize", renderBoxes);
+
+// While analysis runs, refresh every couple of seconds so photos appear as they're done.
+setInterval(async () => {
+  if ($("work").classList.contains("hidden")) return;
+  const p = lastProgress;
+  if (p && (p.phase === "analysing" || p.phase === "scanning")) { try { await load(false); } catch (e) {} }
+}, 2500);
+
+(async () => { if (await refreshStatus()) await opened(); })();
+</script>
+</body>
+</html>
