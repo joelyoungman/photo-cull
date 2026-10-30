@@ -17,23 +17,26 @@ your shoot folder is the Selects folder, and only when you ask. It never overwri
 
 ## Install (Mac)
 
-1. Download **PhotoCull-mac.zip** from the [latest release](../../releases/latest) and double-click it to unzip.
-2. In the **Photo Cull** folder, double-click **Install Photo Cull.command**.
-3. The first time, macOS says it can't check the file, because it isn't from the App Store. Click **Done**, then:
-   - open **System Settings → Privacy & Security**,
-   - scroll down to *"Install Photo Cull.command" was blocked* and click **Open Anyway**,
-   - confirm with Touch ID or your password.
+1. Download **PhotoCull-mac.zip** from the [latest release](../../releases/latest). Your Mac unzips it into
+   Downloads.
+2. Double-click **Install Photo Cull**.
+3. The first time only, macOS says it can't check it, because it isn't from the App Store. Click **Done**, then
+   open **System Settings → Privacy & Security**, scroll down, click **Open Anyway** and confirm. Removing this step
+   would need a paid Apple developer account.
+4. Click **Install**. It takes a few minutes the first time. When it's done, click **Open Photo Cull**.
 
-   You only do this once. If you prefer, open Terminal, type `bash ` (with a space), drag the installer onto the
-   window and press Return.
-4. A Terminal window shows progress. The first install downloads about 250 MB and takes a few minutes. When it says
-   **Done!**, Photo Cull opens in your browser.
+After that, open **Photo Cull** from Applications or Launchpad. It opens in your web browser. No Terminal is needed
+at any point.
 
-After that, open **Photo Cull** from Applications, Launchpad or Spotlight. It needs the internet only while
-installing.
+**Updates:** when there's a new version, Photo Cull shows an **Update** button at the top. One click: it closes,
+updates itself and reopens, keeping your stars and picks. To check for updates, Photo Cull asks GitHub for the
+latest version number at most every 6 hours. Nothing about your photos is ever sent.
 
-To update, download the new zip and run the installer again. Your ratings are kept. To remove Photo Cull,
-double-click **Uninstall Photo Cull.command**. Your photos and Selects folders stay.
+For Joel or anyone comfortable with Terminal, this one line also installs or updates:
+`curl -fsSL https://github.com/joelyoungman/photo-cull/releases/latest/download/install.sh | bash`
+
+To remove Photo Cull, delete it from Applications and delete the folder
+`~/Library/Application Support/Photo Cull`. Your photos and Selects folders stay.
 
 ## Use
 
@@ -105,7 +108,9 @@ storage.
   suggestions, marks, and copying to Selects.
 - `photocull/server.py` and `photocull/static/index.html` are the local page at http://localhost:8765. It only
   listens on this computer.
-- `mac/` holds the installer, the app launcher and the icon. `scripts/build_zip.py` builds the download.
+- `mac/` holds the installer (`installer.applescript` → the double-click app, `install-mac.sh` does the work),
+  the launcher and the icon. `install.sh` is the online installer behind the Update button. `scripts/build_zip.py` builds
+  the download (on a Mac, which CI does).
 
 Everything runs on the CPU and is sized for a MacBook Neo (A18 Pro, 8 GB). Analysis never uses the whole processor:
 it runs 2 workers (measured at about 2 cores busy at most), at low priority. On a Mac they're marked as background

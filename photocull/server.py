@@ -21,11 +21,14 @@ from . import job as jobs
 PORT = int(os.environ.get("PHOTOCULL_PORT", 8765))
 HOSTS = {f"localhost:{PORT}", f"127.0.0.1:{PORT}"}
 PAGE = Path(__file__).resolve().parent / "static" / "index.html"
+APP_DIR = Path(__file__).resolve().parent.parent
+REPO = "joelyoungman/photo-cull"
+INSTALL_SH = f"https://github.com/{REPO}/releases/latest/download/install.sh"
 # The page may only load from and talk to this server, so nothing in it can send photos anywhere.
 CSP = ("default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
        "connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 
-state = {"job": None}
+state = {"job": None, "latest": None, "checked": 0}
 _open_lock = threading.Lock()
 
 
@@ -84,6 +87,47 @@ def open_with(path, app=None):
     return False
 
 
+def version():
+    import tomllib
+
+    try:
+        return tomllib.loads((APP_DIR / "pyproject.toml").read_text("utf-8"))["project"]["version"]
+    except (OSError, KeyError, ValueError):
+        return "0"
+
+
+def _v(text):
+    return tuple(int(x) for x in text.lstrip("v").split(".") if x.isdigit())
+
+
+def latest_version():
+    """The newest release's version from GitHub, checked at most every 6 hours. Only the version number is
+    fetched; nothing about the photos is sent. None if offline."""
+    import json
+    import urllib.request
+
+    if time.time() - state["checked"] > 6 * 3600:
+        state["checked"] = time.time()
+        try:
+            req = urllib.request.Request(f"https://api.github.com/repos/{REPO}/releases/latest",
+                                         headers={"Accept": "application/vnd.github+json", "User-Agent": "photo-cull"})
+            with urllib.request.urlopen(req, timeout=5) as r:
+                state["latest"] = json.load(r)["tag_name"].lstrip("v")
+        except Exception:
+            pass
+    return state["latest"]
+
+
+def start_update():
+    """Run the online installer in its own process: it stops this server, installs the latest release and starts
+    Photo Cull again. The page waits and reloads. Output goes to the install log."""
+    log = Path.home() / "Library" / "Logs" / "Photo Cull install.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    with open(log, "a") as out:
+        subprocess.Popen(["/bin/bash", "-c", f"curl -fsSL '{INSTALL_SH}' | PHOTOCULL_UPDATING=1 /bin/bash"],
+                         stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
+
+
 # ---------- plumbing ----------
 
 def guard(request):
@@ -132,7 +176,20 @@ async def page(request):
 
 
 async def ping(request):
-    return JSONResponse({"app": "photo-cull", "pid": os.getpid()})
+    return JSONResponse({"app": "photo-cull", "pid": os.getpid(), "version": version()})
+
+
+async def update(request):
+    """GET: is there a newer version? POST: install it (Mac only)."""
+    if request.method == "POST":
+        if sys.platform != "darwin":
+            raise ValueError("updating from the page only works on a Mac")
+        await run_in_threadpool(start_update)
+        return JSONResponse({"ok": True})
+    current = version()
+    latest = await run_in_threadpool(latest_version) if sys.platform == "darwin" else None
+    return JSONResponse({"current": current, "latest": latest,
+                         "available": bool(latest and _v(latest) > _v(current))})
 
 
 async def status(request):
@@ -241,6 +298,7 @@ app = Starlette(routes=[
     Route("/api/openfile", endpoint(open_file), methods=["POST"]),
     Route("/api/reanalyse", endpoint(reanalyse), methods=["POST"]),
     Route("/api/quit", endpoint(quit_app), methods=["POST"]),
+    Route("/api/update", endpoint(update), methods=["GET", "POST"]),
 ])
 
 

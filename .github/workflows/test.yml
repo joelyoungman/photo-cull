@@ -23,18 +23,24 @@ jobs:
       - name: Build the zip
         run: python3 scripts/build_zip.py
 
-      - name: Unzip like a download
+      - name: Check the installer app in the zip
         run: |
           mkdir -p "$RUNNER_TEMP/Downloads"
           ditto -x -k dist/PhotoCull-mac.zip "$RUNNER_TEMP/Downloads"
           ls -la "$RUNNER_TEMP/Downloads/Photo Cull"
+          INST="$RUNNER_TEMP/Downloads/Photo Cull/Install Photo Cull.app"
+          codesign --verify --verbose "$INST"
+          lipo -archs "$INST/Contents/MacOS/applet" | grep -qw arm64 || { echo "installer is not native arm64"; exit 1; }
+          test -f "$INST/Contents/Resources/payload/install-mac.sh"
+          test -f "$INST/Contents/Resources/payload/app/photocull/server.py"
 
-      - name: Run the installer
+      - name: Install (what the installer app and the Update button run)
         env:
           PHOTOCULL_APPS_DIR: ${{ runner.temp }}/Applications
           PHOTOCULL_NO_OPEN: "1"
+          PHOTOCULL_ZIP: file://${{ github.workspace }}/dist/PhotoCull-mac.zip
         run: |
-          /usr/bin/time -l "$RUNNER_TEMP/Downloads/Photo Cull/Install Photo Cull.command" 2>&1 | tail -40
+          /usr/bin/time -l bash install.sh 2>&1 | tail -40
           APP="$RUNNER_TEMP/Applications/Photo Cull.app"
           plutil -lint "$APP/Contents/Info.plist"
           codesign --verify --verbose "$APP"
@@ -88,16 +94,20 @@ jobs:
       - run: uv run pytest -q
 
   release:
-    # A v* tag that passes the Mac test publishes the zip as a GitHub release.
+    # A v* tag that passes the Mac tests publishes the zip, and install.sh for the Update button, as a release.
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [mac-install, windows-dev]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: PhotoCull-mac
       - env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" PhotoCull-mac.zip --repo "$GITHUB_REPOSITORY" --title "Photo Cull $GITHUB_REF_NAME" --notes "Download PhotoCull-mac.zip, unzip, and double-click Install Photo Cull.command. See the README for the one-time 'Open Anyway' step."
+          NOTES: >-
+            New install: download PhotoCull-mac.zip, unzip it and double-click Install Photo Cull
+            (Read me first explains the one-time 'Open Anyway' step). Already installed: click Update in Photo Cull.
+        run: gh release create "$GITHUB_REF_NAME" PhotoCull-mac.zip install.sh --title "Photo Cull $GITHUB_REF_NAME" --notes "$NOTES"

@@ -60,6 +60,8 @@ def main(shoot, big=None):
         sys.exit("Photo Cull didn't start")
     page = urllib.request.urlopen(urllib.request.Request(BASE + "/"), timeout=10).read()
     assert b"Photo Cull" in page, "review page missing"
+    u = call("/api/update")
+    assert u["current"] and u["current"] != "0", u  # the version check answers (the Update button relies on it)
 
     p, peak, _ = analyse(shoot, pid)
     assert p["phase"] == "done", p

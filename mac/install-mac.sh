@@ -1,7 +1,7 @@
 #!/bin/bash
-# Photo Cull installer for macOS. Double-click it (the first time, macOS asks you to allow it: see "Read me first").
-# Everything goes in ~/Library/Application Support/Photo Cull, plus "Photo Cull" in Applications.
-# Nothing else on the Mac is changed, and no admin password is needed.
+# Photo Cull installer for macOS. Run by "Install Photo Cull.app" (double-click), by install.sh (one line in
+# Terminal), or by the app's Update button. Everything goes in ~/Library/Application Support/Photo Cull, plus
+# "Photo Cull" in Applications. Nothing else on the Mac is changed, and no admin password is needed.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -10,11 +10,25 @@ APPS="${PHOTOCULL_APPS_DIR:-/Applications}"
 UV_VERSION="0.13.6"
 PYTHON_VERSION="3.12"
 
-say() { printf '\n\033[1m%s\033[0m\n' "$*"; }
-fail() { printf '\n\033[31mInstall failed: %s\033[0m\n' "$*"; echo "Take a screenshot of this window and send it to Joel."; exit 1; }
+say() {
+  printf '\n\033[1m%s\033[0m\n' "$*"
+  if [ -n "${PHOTOCULL_STATUS:-}" ]; then echo "$*" >> "$PHOTOCULL_STATUS"; fi  # the installer app's progress line
+}
+fail() {
+  printf '\n\033[31mInstall failed: %s\033[0m\n' "$*"
+  echo "Take a screenshot of this window and send it to Joel."
+  # Updating from inside the app: bring the existing Photo Cull back rather than leave her with nothing.
+  if [ -n "${PHOTOCULL_UPDATING:-}" ]; then PHOTOCULL_NO_BROWSER=1 "$APP_HOME/app/mac/launcher.sh" >/dev/null 2>&1 & fi
+  exit 1
+}
 trap 'fail "a step stopped unexpectedly (line $LINENO)"' ERR
 
 say "Installing Photo Cull…"
+if [ -n "${PHOTOCULL_UPDATING:-}" ]; then
+  # Started by the app's Update button: stop the running copy so nothing changes under it.
+  curl -fs -X POST -H "X-Photo-Cull: 1" http://127.0.0.1:8765/api/quit >/dev/null 2>&1 || true
+  for _ in $(seq 1 20); do curl -fs http://127.0.0.1:8765/api/ping >/dev/null 2>&1 || break; sleep 0.5; done
+fi
 case "$(uname -m)" in
   arm64) UV_ARCH="aarch64-apple-darwin" ;;
   x86_64) UV_ARCH="x86_64-apple-darwin" ;;
@@ -100,7 +114,10 @@ touch "$BUNDLE"
 
 say "Done! Photo Cull is in $APPS."
 echo "Open it like any app (Launchpad, Spotlight, or the Applications folder). It opens in your web browser."
-if [ -z "${PHOTOCULL_NO_OPEN:-}" ]; then
+if [ -n "${PHOTOCULL_UPDATING:-}" ]; then
+  # The browser tab that asked for the update is still open and reloads itself when Photo Cull is back.
+  PHOTOCULL_NO_BROWSER=1 "$APP_HOME/app/mac/launcher.sh" || true
+elif [ -z "${PHOTOCULL_NO_OPEN:-}" ]; then
   if ! open "$BUNDLE" 2>/dev/null; then
     # Installed fine, but macOS wouldn't open the app this time: start Photo Cull directly instead.
     "$APP_HOME/app/mac/launcher.sh" || true

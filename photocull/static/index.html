@@ -113,6 +113,7 @@ header .spacer { flex: 1; }
   <span class="spacer"></span>
   <span id="progress"></span>
   <span id="counts"></span>
+  <button id="updateBtn" class="primary hidden" title="A newer Photo Cull is available">Update</button>
   <button id="helpBtn" title="Keyboard shortcuts (?)">?</button>
   <button id="quitBtn" title="Stop Photo Cull">Quit</button>
 </header>
@@ -531,6 +532,43 @@ document.addEventListener("keydown", e => {
   }[k];
   if (act) { e.preventDefault(); act(); }
 });
+
+// ---------- updates ----------
+async function checkUpdate() {
+  try {
+    const u = await api("/api/update");
+    if (u.available) { $("updateBtn").textContent = "Update to " + u.latest; $("updateBtn").classList.remove("hidden"); $("updateBtn").dataset.latest = u.latest; }
+  } catch (e) {}
+}
+function updateNow() {
+  const latest = $("updateBtn").dataset.latest;
+  modal(c => {
+    c.append(el("h2", "", "Update Photo Cull to " + latest + "?"));
+    c.append(el("p", "", "Photo Cull closes, downloads the new version and opens again by itself. It takes a minute or two. Your stars and picks are kept, and your photos aren't touched."));
+    const a = el("div", "actions");
+    const cancel = el("button", "", "Not now"); cancel.onclick = closeModal;
+    const go = el("button", "primary", "Update");
+    go.onclick = async () => {
+      go.disabled = true;
+      try { await api("/api/update", {}); } catch (e) { go.textContent = "Couldn't start: " + e.message; return; }
+      document.body.replaceChildren(el("div", "empty", "Updating Photo Cull… this page reopens by itself in a minute or two. Please leave it open."));
+      const started = Date.now();
+      const poll = setInterval(async () => {
+        try {
+          const r = await fetch("/api/ping"); const p = await r.json();
+          if (p.version === latest) { clearInterval(poll); location.reload(); }
+        } catch (e) {}
+        if (Date.now() - started > 10 * 60 * 1000) {
+          clearInterval(poll);
+          document.body.replaceChildren(el("div", "empty", "The update is taking longer than expected. Open Photo Cull again from Applications. If that doesn't work, tell Joel."));
+        }
+      }, 3000);
+    };
+    a.append(cancel, go); c.append(a);
+  });
+}
+$("updateBtn").onclick = updateNow;
+checkUpdate();
 
 $("chooseBtn").onclick = choose; $("chooseBig").onclick = choose;
 $("typedGo").onclick = () => { const p = $("typedPath").value.trim(); if (p) openPath(p); };
