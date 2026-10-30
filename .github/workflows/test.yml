@@ -35,10 +35,16 @@ jobs:
           PHOTOCULL_NO_OPEN: "1"
         run: |
           /usr/bin/time -l "$RUNNER_TEMP/Downloads/Photo Cull/Install Photo Cull.command" 2>&1 | tail -40
-          test -x "$RUNNER_TEMP/Applications/Photo Cull.app/Contents/MacOS/Photo Cull"
-          plutil -lint "$RUNNER_TEMP/Applications/Photo Cull.app/Contents/Info.plist"
-          codesign --verify --verbose "$RUNNER_TEMP/Applications/Photo Cull.app"
+          APP="$RUNNER_TEMP/Applications/Photo Cull.app"
+          plutil -lint "$APP/Contents/Info.plist"
+          codesign --verify --verbose "$APP"
           sw_vers
+          # Must be a native Apple Silicon app: these Macs have Rosetta installed, so a script or Intel-only app
+          # would open here but ask her Mac (no Rosetta) to install it.
+          EXE="$APP/Contents/MacOS/$(plutil -extract CFBundleExecutable raw "$APP/Contents/Info.plist")"
+          file "$EXE"
+          lipo -archs "$EXE" | grep -qw arm64 || { echo "launcher is not native arm64"; exit 1; }
+          test "$(plutil -extract LSUIElement raw "$APP/Contents/Info.plist")" = true
           du -sh "$HOME/Library/Application Support/Photo Cull"
 
       - name: Make a sample shoot (public-domain and CC0 photos only)
@@ -53,17 +59,6 @@ jobs:
           data, _, _ = photos._raw_preview(os.path.join(shoot, "cardC", "DSC09009.ARW"))
           open(os.path.join(shoot, "cardC", "DSC09009.JPG"), "wb").write(data)  # a RAW + JPEG pair
           EOF
-
-      - name: Does macOS open an unsigned copy? (diagnostic for error -10669, seen on a real Mac)
-        continue-on-error: true
-        run: |
-          cp -R "$RUNNER_TEMP/Applications/Photo Cull.app" "$RUNNER_TEMP/Unsigned.app"
-          codesign --remove-signature "$RUNNER_TEMP/Unsigned.app"
-          if open --env PHOTOCULL_NO_BROWSER=1 "$RUNNER_TEMP/Unsigned.app"; then echo "UNSIGNED: opened"; else echo "UNSIGNED: refused"; fi
-          sleep 15
-          curl -fs -X POST -H "X-Photo-Cull: 1" http://127.0.0.1:8765/api/quit || true
-          sleep 2
-          rm -rf "$RUNNER_TEMP/Unsigned.app"
 
       - name: Open the app like a double-click, and cull through its API
         run: |

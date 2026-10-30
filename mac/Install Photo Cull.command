@@ -57,27 +57,43 @@ say "Checking it works…"
 (cd "$APP_HOME/app" && "$APP_HOME/venv/bin/python" -c "import photocull.quality, photocull.server; print('ok')") \
   || fail "Photo Cull didn't start its self-check"
 
-# 4. The "Photo Cull" app: a tiny launcher that starts Photo Cull and opens it in the browser.
+# 4. The "Photo Cull" app. It's built here by macOS's own AppleScript compiler (osacompile), which gives a native
+#    Apple Silicon app (a shell-script app would make macOS ask to install Rosetta). All it does is run launcher.sh,
+#    which starts Photo Cull in the background and opens the browser.
 say "Adding Photo Cull to Applications…"
 if ! mkdir -p "$APPS" 2>/dev/null || [ ! -w "$APPS" ]; then APPS="$HOME/Applications"; mkdir -p "$APPS"; fi
 BUNDLE="$APPS/Photo Cull.app"
+VERSION="$(grep -m1 '^version' "$HERE/app/pyproject.toml" | cut -d'"' -f2)"
+chmod +x "$APP_HOME/app/mac/launcher.sh"
+SCRIPT="$(mktemp -d)/Photo Cull.applescript"
+cat > "$SCRIPT" <<'APPLESCRIPT'
+set launcher to POSIX path of (path to library folder from user domain) & "Application Support/Photo Cull/app/mac/launcher.sh"
+do shell script quoted form of launcher & " > /dev/null 2>&1 &"
+APPLESCRIPT
 rm -rf "$BUNDLE"
-mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/Resources"
-cp "$HERE/app/mac/launcher.sh" "$BUNDLE/Contents/MacOS/Photo Cull"
-chmod +x "$BUNDLE/Contents/MacOS/Photo Cull"
-cp "$HERE/app/mac/Info.plist" "$BUNDLE/Contents/Info.plist"
+osacompile -o "$BUNDLE" "$SCRIPT" || fail "couldn't build the Photo Cull app"
+PLIST="$BUNDLE/Contents/Info.plist"
+plutil -replace CFBundleIdentifier -string "nz.co.gbiz.photocull" "$PLIST"
+plutil -replace CFBundleName -string "Photo Cull" "$PLIST"
+plutil -replace CFBundleShortVersionString -string "$VERSION" "$PLIST"
+plutil -replace CFBundleVersion -string "$VERSION" "$PLIST"
+plutil -replace LSUIElement -bool true "$PLIST"  # no Dock icon: Photo Cull itself lives in the browser
+# Our icon instead of the AppleScript one.
 ICONSET="$(mktemp -d)/PhotoCull.iconset"
 mkdir -p "$ICONSET"
 for s in 16 32 128 256 512; do
   sips -z $s $s "$HERE/app/mac/icon.png" --out "$ICONSET/icon_${s}x${s}.png" >/dev/null 2>&1 || true
   sips -z $((s*2)) $((s*2)) "$HERE/app/mac/icon.png" --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null 2>&1 || true
 done
-iconutil -c icns "$ICONSET" -o "$BUNDLE/Contents/Resources/PhotoCull.icns" 2>/dev/null || true
+if iconutil -c icns "$ICONSET" -o "$BUNDLE/Contents/Resources/applet.icns" 2>/dev/null; then
+  plutil -remove CFBundleIconName "$PLIST" 2>/dev/null || true  # else macOS shows the icon in Assets.car
+  rm -f "$BUNDLE/Contents/Resources/Assets.car"
+  plutil -replace CFBundleIconFile -string "applet" "$PLIST"
+fi
 # Files we made here never came from the internet, so macOS won't ask about them again.
 xattr -dr com.apple.quarantine "$BUNDLE" "$APP_HOME/app" 2>/dev/null || true
-# A free "ad-hoc" signature made on this Mac (no Apple account): newer macOS refuses to open apps with none at all
-# (error -10669). Then tell macOS's app list about it.
-codesign --force --sign - "$BUNDLE" >/dev/null 2>&1 || echo "(couldn't sign the app; it may still open)"
+# Re-seal it with a free "ad-hoc" signature made on this Mac (no Apple account needed), then tell macOS about it.
+codesign --force --deep --sign - "$BUNDLE" >/dev/null 2>&1 || echo "(couldn't sign the app; it may still open)"
 LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 [ -x "$LSREGISTER" ] && "$LSREGISTER" -f "$BUNDLE" >/dev/null 2>&1 || true
 touch "$BUNDLE"
@@ -87,7 +103,7 @@ echo "Open it like any app (Launchpad, Spotlight, or the Applications folder). I
 if [ -z "${PHOTOCULL_NO_OPEN:-}" ]; then
   if ! open "$BUNDLE" 2>/dev/null; then
     # Installed fine, but macOS wouldn't open the app this time: start Photo Cull directly instead.
-    "$BUNDLE/Contents/MacOS/Photo Cull" || true
+    "$APP_HOME/app/mac/launcher.sh" || true
   fi
   echo "You can close this window."
 fi
