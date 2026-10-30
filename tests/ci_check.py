@@ -77,11 +77,18 @@ def main(shoot, big=None):
     assert os.path.exists(os.path.join(shoot, "Selects", "DSC09009.xmp"))
     assert os.path.exists(os.path.join(shoot, "cardC", "DSC09009.ARW")), "original moved!"
 
-    seconds = p["seconds"]
-    summary = (f"### Photo Cull on macOS\n\n- {len(shots)} photos analysed in {seconds} s "
-               f"({seconds / len(shots):.2f} s per photo, CPU only: GitHub's Macs have no GPU access)\n"
-               f"- peak memory of the Photo Cull process: {peak:.0f} MB\n- burst grouped, best suggested, blur / eyes closed / "
-               f"dark flagged, RW2 + ARW read, picks copied to Selects with a rating sidecar\n")
+    summary = (f"### Photo Cull on macOS\n\n- sample shoot: {len(shots)} photos in {p['seconds']} s; burst grouped, best suggested, "
+               f"blur / eyes closed / dark flagged, RW2 + ARW read, picks copied to Selects with a rating sidecar\n")
+    if big:
+        n = len(os.listdir(big))
+        bp, bpeak = analyse(big, pid)
+        assert bp["phase"] == "done" and not bp["errors"], bp
+        groups = {s["group"] for s in call("/api/shots")["shots"]}
+        assert len(groups) == n // 3, f"{len(groups)} groups for {n} photos in bursts of 3"
+        summary += (f"- speed: {n} full-size 24 MP JPEGs in {bp['seconds']} s = {bp['seconds'] / n:.2f} s per photo "
+                    f"({len(groups)} groups)\n")
+        peak = max(peak, bpeak)
+    summary += f"- peak memory of the Photo Cull process: {peak:.0f} MB\n"
     print(summary)
     if os.environ.get("GITHUB_STEP_SUMMARY"):
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
