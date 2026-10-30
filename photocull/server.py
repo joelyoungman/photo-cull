@@ -50,7 +50,8 @@ def open_job(path):
 def choose_folder():
     """The system's own folder picker. Returns a path, or None if cancelled."""
     if sys.platform == "darwin":
-        script = ('set f to choose folder with prompt "Choose the shoot folder to cull"\n'
+        script = ("activate\n"  # bring the picker in front of the browser, not behind it
+                  'set f to choose folder with prompt "Choose the shoot folder to cull"\n'
                   "return POSIX path of f")
         r = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
         return r.stdout.strip() or None
@@ -158,8 +159,9 @@ async def open_folder(request):
 
 async def shots(request):
     j = need_job()
+    progress = dict(j.progress)  # read first: if it says "done", the shots below include every finished photo
     data = await run_in_threadpool(j.shots)
-    return JSONResponse({"path": str(j.root), "progress": j.progress, **data})
+    return JSONResponse({"path": str(j.root), "progress": progress, **data})
 
 
 async def image(request):
@@ -266,6 +268,7 @@ def main(argv=None):
         print(f"Photo Cull is already running: {url}")
         return
     jobs.gentle()
+    threading.Thread(target=jobs.prune_old_thumbs, daemon=True).start()
     if "--open" in argv:
         def open_when_ready():
             for _ in range(100):

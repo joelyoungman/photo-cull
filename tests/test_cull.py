@@ -3,7 +3,6 @@
   uv run pytest -q
 """
 import os
-from pathlib import Path
 
 import pytest
 
@@ -72,3 +71,43 @@ def test_reopen_is_incremental(job):
     again.analyse()
     assert again.progress["total"] == 0  # nothing re-analysed
     assert by_name(again)["DSC00104"]["rating"] == 4
+
+
+def test_raw_preview_turned_upright(monkeypatch, tmp_path):
+    """A RAW whose preview is stored sideways, with the camera's orientation only in the RAW itself."""
+    import io
+
+    from PIL import Image
+
+    from photocull import photos
+
+    buf = io.BytesIO()
+    Image.new("RGB", (300, 200), "white").save(buf, "JPEG")
+    monkeypatch.setattr(photos, "_raw_preview", lambda path: (buf.getvalue(), (6000, 4000), 6))
+    img, size, _ = photos.open_photo(tmp_path / "P1000001.RW2")
+    assert img.size == (200, 300) and size == (4000, 6000)
+
+
+def test_failed_copy_leaves_nothing(job, monkeypatch):
+    import shutil
+
+    def half_copy(src, dst):
+        with open(dst, "wb") as f:
+            f.write(b"partial")
+        raise OSError("disk full")
+
+    monkeypatch.setattr(shutil, "copy2", half_copy)
+    result = job.copy_selects(["cardA/DSC00110"])
+    assert result["failed"] and not (job.root / "Selects" / "DSC00110.JPG").exists()
+
+
+def test_two_cameras_at_once_keep_their_bursts():
+    from photocull.job import _group
+
+    def shot(cam, t, n):
+        return {"key": f"{cam}/P{n}", "camera": cam, "serial": None, "t": t, "phash": None, "vec": None}
+
+    a = [shot("A", t, i) for i, t in enumerate((0.0, 0.5, 1.0))]
+    b = [shot("B", t, i) for i, t in enumerate((0.2, 0.7, 1.2))]
+    groups = _group(sorted(a + b, key=lambda r: r["t"]))
+    assert sorted(len(g) for g in groups) == [3, 3]

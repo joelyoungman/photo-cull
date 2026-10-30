@@ -57,6 +57,8 @@ double-click **Uninstall Photo Cull.command**. Your photos and Selects folders s
    Lightroom show.
 
 Reopening a shoot is instant: only new or changed photos are analysed, and your picks and stars are remembered.
+Previews of shoots you haven't opened for 60 days are cleared to save disk space. Your marks stay, and the previews
+are remade if you open the shoot again.
 
 ### What the suggestions mean
 

@@ -8,6 +8,7 @@ import threading
 from pathlib import Path
 
 import numpy as np
+from PIL import Image
 
 MODELS = Path(__file__).resolve().parent.parent / "models"
 ANALYSE_PX = 1600  # faces are looked for on a copy this size: big enough for a group shot
@@ -121,7 +122,7 @@ def faces(img):
 
 
 def embedding(img):
-    """Unit vector describing what's in the photo (MediaPipe image embedder, MobileNet V3, Apache-2.0).
+    """Unit vector describing what's in a small (~320 px) copy of the photo (MediaPipe image embedder, MobileNet V3, Apache-2.0).
     Close vectors mean the same kind of scene, not the same moment: grouping also needs time and pHash."""
     if not hasattr(_local, "embedder"):
         import mediapipe as mp
@@ -132,15 +133,25 @@ def embedding(img):
         _local.embedder = vision.ImageEmbedder.create_from_options(options)
         _local.mp_embed = mp
     mp = _local.mp_embed
-    from .photos import shrink
-
-    rgb = np.ascontiguousarray(np.asarray(shrink(img, 320)))
+    rgb = np.ascontiguousarray(np.asarray(img))
     result = _local.embedder.embed(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb))
     return np.asarray(result.embeddings[0].embedding, dtype=np.float32)
 
 
+def phash(img):
+    """64-bit perceptual hash as 16 hex digits: grayscale 32x32, DCT, the 8x8 lowest frequencies above or below
+    their median. Near-identical frames differ in only a few bits."""
+    import cv2
+
+    gray = np.asarray(img.convert("L").resize((32, 32), Image.LANCZOS), dtype=np.float32)
+    low = cv2.dct(gray)[:8, :8]
+    bits = (low > np.median(low)).ravel()
+    return f"{int(''.join('1' if b else '0' for b in bits), 2):016x}"
+
+
 def assess(img):
-    """Everything we judge about one photo (PIL RGB image at ANALYSE_PX or larger)."""
+    """Everything we judge about one photo, from a PIL RGB copy ANALYSE_PX on its long side. Each smaller size
+    is made from the one before, not from the full photo."""
     import cv2
 
     from .photos import shrink
@@ -148,4 +159,6 @@ def assess(img):
     small = shrink(img, SHARP_PX)
     gray = cv2.cvtColor(np.asarray(small), cv2.COLOR_RGB2GRAY).astype(np.float32)
     e = exposure(gray.astype(np.uint8))
-    return {"sharpness": round(sharpness(gray), 1), **e, "faces": faces(shrink(img, ANALYSE_PX))}
+    tiny = shrink(small, 320)
+    return {"sharpness": round(sharpness(gray), 1), **e, "faces": faces(img),
+            "phash": phash(tiny), "vec": embedding(tiny)}

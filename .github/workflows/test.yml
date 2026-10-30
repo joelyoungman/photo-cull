@@ -43,7 +43,7 @@ jobs:
           sys.path.insert(0, os.path.expanduser("~/Library/Application Support/Photo Cull/app"))
           from photocull import photos
           shoot = os.path.join(os.environ["RUNNER_TEMP"], "shoot")
-          data, _ = photos._raw_preview(os.path.join(shoot, "cardC", "DSC09009.ARW"))
+          data, _, _ = photos._raw_preview(os.path.join(shoot, "cardC", "DSC09009.ARW"))
           open(os.path.join(shoot, "cardC", "DSC09009.JPG"), "wb").write(data)  # a RAW + JPEG pair
           EOF
 

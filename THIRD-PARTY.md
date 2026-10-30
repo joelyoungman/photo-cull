@@ -11,7 +11,6 @@ Every piece allows commercial use. The models ship in `models/`, unchanged.
 | OpenCV | image maths, runs YuNet | Apache-2.0 | [opencv/opencv](https://github.com/opencv/opencv) |
 | rawpy / LibRaw | reading the preview inside RAW files | MIT / LGPL-2.1 or CDDL-1.0 | [letmaik/rawpy](https://github.com/letmaik/rawpy) |
 | Pillow, pillow-heif | JPEG and HEIC | MIT-CMU, BSD-3 (libheif LGPL-3.0) | |
-| ImageHash | look-alike check (pHash) | BSD-2 | |
 | ExifRead | capture time, camera | BSD-3 | |
 | NumPy | maths | BSD-3 | |
 | Starlette, Uvicorn | the local web page | BSD-3 | |

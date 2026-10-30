@@ -21,9 +21,10 @@ import numpy as np
 
 from . import photos, quality
 
-ANALYSIS_V = 1  # bump to re-analyse every shot after changing what we measure
+ANALYSIS_V = 2  # bump to re-analyse every shot after changing what we measure
 WORKERS = 2  # MacBook Neo: 2 performance cores; more threads only make the fan and Drive downloads fight
-THUMB_PX = {"s": 400, "l": 2048}
+THUMB_PX = {"s": 400, "l": quality.ANALYSE_PX}  # RAW previews are only 1600-1900 px anyway
+THUMB_DAYS = 60  # previews of shoots not opened for this long are deleted (marks are kept; they rebuild on reopen)
 SELECTS = "Selects"
 
 # Grouping: shots are taken in time order; a shot joins the group before it when it's the same camera and
@@ -55,6 +56,19 @@ def recent_jobs():
         if Path(info["path"]).is_dir():
             out.append({"path": info["path"], "name": Path(info["path"]).name, "opened": info.get("opened", 0)})
     return sorted(out, key=lambda j: -j["opened"])
+
+
+def prune_old_thumbs(keep=None):
+    """Delete the previews of shoots not opened for THUMB_DAYS, so a year of jobs doesn't fill a small SSD.
+    Marks (cull.db) stay; previews are made again if the shoot is reopened."""
+    cutoff = time.time() - THUMB_DAYS * 86400
+    for f in (state_root() / "jobs").glob("*/job.json"):
+        try:
+            opened = json.loads(f.read_text("utf-8")).get("opened", 0)
+        except (OSError, ValueError):
+            continue
+        if opened < cutoff and f.parent != keep:
+            shutil.rmtree(f.parent / "thumbs", ignore_errors=True)
 
 
 def online_only(path):
@@ -123,6 +137,7 @@ class Job:
         self.progress = {"phase": "idle", "done": 0, "total": 0, "current": "", "downloading": False, "errors": 0,
                          "started": None, "finished": None, "seconds": None}
         self._cache = None  # ranked shot list, rebuilt after analysis or marks change
+        self._gen = 0  # bumped on every change, so a ranking computed from older data is never kept
         self._thread = None
         self._stop = threading.Event()
 
@@ -153,6 +168,8 @@ class Job:
             gone = [k for k in known if k not in shots]
             for k in gone:
                 self.db.execute("DELETE FROM shots WHERE key = ?", (k,))
+                for size in THUMB_PX:
+                    self.thumb(k, size).unlink(missing_ok=True)
         todo = []
         for key, shot in shots.items():
             try:
@@ -160,13 +177,13 @@ class Job:
             except OSError:
                 continue
             sig = f"{shot.source}|{st.st_size}|{int(st.st_mtime)}"
-            if known.get(key) != sig:
+            if known.get(key) != sig or not self.thumb(key, "s").exists():  # new, changed, or previews pruned
                 todo.append((shot, sig))
             else:  # the RAW/JPEG pairing may have changed without the source changing
                 with self.lock:
                     self.db.execute("UPDATE shots SET files = ? WHERE key = ?", (json.dumps(shot.files), key))
         p.update(phase="analysing", total=len(todo))
-        self._cache = None
+        self._invalidate()
         with ThreadPoolExecutor(WORKERS) as pool:
             for row in pool.map(self._measure, todo):
                 if self._stop.is_set():
@@ -177,8 +194,8 @@ class Job:
                 p["done"] += 1
                 p["errors"] += bool(row.get("error"))
                 if p["done"] % 10 == 0:
-                    self._cache = None
-        self._cache = None
+                    self._invalidate()
+        self._invalidate()
         p.update(phase="stopped" if self._stop.is_set() else "done", current="", downloading=False,
                  finished=time.time(), seconds=round(time.time() - p["started"], 1))
 
@@ -194,19 +211,17 @@ class Job:
         try:
             img, (w, h), preview = photos.open_photo(path)
             exif = photos.shot_exif(self.root, shot, preview)
+            img = photos.shrink(img, quality.ANALYSE_PX)
             q = quality.assess(img)
-            import imagehash
-
-            vec = quality.embedding(img)
             row.update(taken=exif.get("taken"), camera=exif.get("camera"), serial=exif.get("serial"), iso=exif.get("iso"),
                        exposure=exif.get("exposure"), fnumber=exif.get("fnumber"), focal=exif.get("focal"),
                        width=w, height=h, sharpness=q["sharpness"], brightness=q["brightness"], dark=q["dark"],
-                       blown=q["blown"], faces=json.dumps(q["faces"]), phash=str(imagehash.phash(img)),
-                       vec=vec.astype(np.float32).tobytes())
+                       blown=q["blown"], faces=json.dumps(q["faces"]), phash=q["phash"],
+                       vec=q["vec"].astype(np.float32).tobytes())
             name = self._thumb_name(shot.key)
             for size, px in THUMB_PX.items():
                 tmp = self.thumbs / f"{name}-{size}.tmp"
-                photos.shrink(img, px).save(tmp, "JPEG", quality=85 if size == "s" else 90)
+                photos.shrink(img, px).save(tmp, "JPEG", quality=85)
                 tmp.replace(self.thumbs / f"{name}-{size}.jpg")
         except Exception as e:
             row.update(sig=None, error=_describe(path, e))
@@ -229,11 +244,7 @@ class Job:
                     self.db.execute("UPDATE marks SET rating = ?, updated = ? WHERE key = ?", (int(rating), time.time(), key))
                 if flag is not None:
                     self.db.execute("UPDATE marks SET flag = ?, updated = ? WHERE key = ?", (flag, time.time(), key))
-        if self._cache is not None:
-            marks = self._marks()
-            for s in self._cache["shots"]:
-                if s["key"] in keys:
-                    s["rating"], s["flag"] = marks.get(s["key"], (0, ""))
+        self._invalidate()
 
     def _marks(self):
         with self.lock:
@@ -241,12 +252,20 @@ class Job:
 
     # ---------- groups and suggestions ----------
 
+    def _invalidate(self):
+        self._gen += 1
+        self._cache = None
+
     def shots(self):
-        """{shots: [...in time order...], groups: {id: [keys]}} with each shot's group, score, problems and
-        whether it's the suggested pick of its group."""
-        if self._cache is None:
-            self._cache = self._rank()
-        return self._cache
+        """{shots: [...in time order...]} with each shot's group, score, problems and whether it's the suggested
+        pick of its group."""
+        cache = self._cache
+        if cache is None:
+            gen = self._gen
+            cache = self._rank()
+            if gen == self._gen:  # nothing changed while ranking (the analysis may still be writing)
+                self._cache = cache
+        return cache
 
     def _rank(self):
         with self.lock:
@@ -314,15 +333,19 @@ class Job:
         (self.root / SELECTS).mkdir(exist_ok=True)
         for key, f, target in plan:
             src = self.root / f
+            if target.exists():  # same size: an earlier copy
+                skipped.append(target.name)
+                continue
             try:
-                if target.exists():  # same size: an earlier copy
-                    skipped.append(target.name)
-                    continue
                 shutil.copy2(src, target)  # final name straight away: Drive uploads one finished file
                 if target.stat().st_size != src.stat().st_size:
                     raise OSError("copy is incomplete")
                 copied.append(target.name)
             except OSError as e:
+                try:  # never leave a half-copied file behind; it didn't exist before this attempt
+                    target.unlink(missing_ok=True)
+                except OSError:
+                    pass
                 failed.append(f"{Path(f).name}: {e}")
                 continue
             if write_ratings and target.suffix.lower() in photos.RAW_EXTS:
@@ -374,11 +397,13 @@ def _look_alike(a, b):
 
 def _group(ordered):
     """Split shots (in time order) into groups of one moment. A group only grows forward in time and only from
-    shots like its recent members, so a long event never chains into one giant group."""
-    groups = []
+    shots like its recent members, so a long event never chains into one giant group. Each camera body has its
+    own open group, so two cameras firing at the same moment don't break each other's bursts."""
+    groups, open_group = [], {}
     for r in ordered:
-        g = groups[-1] if groups else None
-        if g and r["t"] is not None and g[-1]["t"] is not None and _camera(r) == _camera(g[-1]):
+        cam = _camera(r)
+        g = open_group.get(cam)
+        if g and r["t"] is not None and g[-1]["t"] is not None:
             gap = r["t"] - g[-1]["t"]
             if 0 <= gap <= BURST_GAP:
                 g.append(r)
@@ -386,7 +411,8 @@ def _group(ordered):
             if gap <= MOMENT_GAP and r["t"] - g[0]["t"] <= MOMENT_SPAN and any(_look_alike(r, m) for m in g[-3:]):
                 g.append(r)
                 continue
-        groups.append([r])
+        open_group[cam] = [r]
+        groups.append(open_group[cam])
     return groups
 
 

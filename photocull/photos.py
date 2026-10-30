@@ -60,40 +60,49 @@ def find_shots(root):
     return shots
 
 
+# LibRaw's flip code for how the camera was held -> the PIL transpose that turns the preview upright
+_FLIP = {3: Image.Transpose.ROTATE_180, 5: Image.Transpose.ROTATE_90, 6: Image.Transpose.ROTATE_270}
+
+
 def _raw_preview(path):
-    """(JPEG bytes of the preview inside a RAW file, full sensor width, height)."""
+    """(JPEG bytes of the preview inside a RAW file, full sensor width, height, LibRaw flip code).
+    The flip says how the camera was held; previews often don't carry it themselves."""
     import rawpy
 
     with rawpy.imread(str(path)) as raw:
         size = (raw.sizes.width, raw.sizes.height)
+        flip = raw.sizes.flip
         try:
             thumb = raw.extract_thumb()
         except (rawpy.LibRawNoThumbnailError, rawpy.LibRawUnsupportedThumbnailError):
             thumb = None
         if thumb is not None and thumb.format == rawpy.ThumbFormat.JPEG:
-            return thumb.data, size
-        # Some phone DNGs carry no usable preview: a quick half-size decode is the last resort.
+            return thumb.data, size, flip
+        # Some phone DNGs carry no usable preview: a quick half-size decode is the last resort (already upright).
         rgb = raw.postprocess(half_size=True, use_camera_wb=True, no_auto_bright=False, output_bps=8)
     buf = io.BytesIO()
     Image.fromarray(rgb).save(buf, "JPEG", quality=92)
-    return buf.getvalue(), size
+    return buf.getvalue(), size, 0
 
 
 def open_photo(path):
     """(RGB PIL image upright, at the largest size we have cheaply, original width, height, exif source bytes or None).
     Raises on unreadable or damaged files."""
     path = Path(path)
-    exif_bytes = None
+    exif_bytes, flip = None, 0
     if path.suffix.lower() in RAW_EXTS:
-        data, size = _raw_preview(path)
+        data, size, flip = _raw_preview(path)
         img = Image.open(io.BytesIO(data))
         exif_bytes = data  # Panasonic keeps full EXIF in the preview; useful when the RAW's own isn't readable
     else:
         img = Image.open(path)
         size = img.size
+    tagged = img.getexif().get(0x0112, 1) != 1  # the preview/JPEG says how to turn itself upright
     img.draft("RGB", (2400, 2400))  # JPEG: decode at reduced size when it's much bigger, far faster
     img = ImageOps.exif_transpose(img).convert("RGB")
-    if path.suffix.lower() not in RAW_EXTS and img.width < img.height and size[0] > size[1]:
+    if not tagged and flip in _FLIP:  # RAW preview stored sideways, orientation only in the RAW itself
+        img = img.transpose(_FLIP[flip])
+    if (img.width < img.height) != (size[0] < size[1]):
         size = size[::-1]
     return img, size, exif_bytes
 
