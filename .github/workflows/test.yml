@@ -9,8 +9,13 @@ on:
 
 jobs:
   mac-install:
-    # Apple Silicon runner: install from the zip exactly as the photographer would, then use the app.
-    runs-on: macos-15
+    # Apple Silicon runners: install from the zip exactly as the photographer would, then open the app the way
+    # Finder does and use it. macOS 26 is what a new MacBook ships with.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-26]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
@@ -32,6 +37,8 @@ jobs:
           /usr/bin/time -l "$RUNNER_TEMP/Downloads/Photo Cull/Install Photo Cull.command" 2>&1 | tail -40
           test -x "$RUNNER_TEMP/Applications/Photo Cull.app/Contents/MacOS/Photo Cull"
           plutil -lint "$RUNNER_TEMP/Applications/Photo Cull.app/Contents/Info.plist"
+          codesign --verify --verbose "$RUNNER_TEMP/Applications/Photo Cull.app"
+          sw_vers
           du -sh "$HOME/Library/Application Support/Photo Cull"
 
       - name: Make a sample shoot (public-domain and CC0 photos only)
@@ -47,11 +54,20 @@ jobs:
           open(os.path.join(shoot, "cardC", "DSC09009.JPG"), "wb").write(data)  # a RAW + JPEG pair
           EOF
 
-      - name: Open the app and cull through its API
-        env:
-          PHOTOCULL_NO_BROWSER: "1"
+      - name: Does macOS open an unsigned copy? (diagnostic for error -10669, seen on a real Mac)
+        continue-on-error: true
         run: |
-          "$RUNNER_TEMP/Applications/Photo Cull.app/Contents/MacOS/Photo Cull"
+          cp -R "$RUNNER_TEMP/Applications/Photo Cull.app" "$RUNNER_TEMP/Unsigned.app"
+          codesign --remove-signature "$RUNNER_TEMP/Unsigned.app"
+          if open --env PHOTOCULL_NO_BROWSER=1 "$RUNNER_TEMP/Unsigned.app"; then echo "UNSIGNED: opened"; else echo "UNSIGNED: refused"; fi
+          sleep 15
+          curl -fs -X POST -H "X-Photo-Cull: 1" http://127.0.0.1:8765/api/quit || true
+          sleep 2
+          rm -rf "$RUNNER_TEMP/Unsigned.app"
+
+      - name: Open the app like a double-click, and cull through its API
+        run: |
+          open --env PHOTOCULL_NO_BROWSER=1 "$RUNNER_TEMP/Applications/Photo Cull.app"
           python3 tests/ci_check.py "$RUNNER_TEMP/shoot" "$RUNNER_TEMP/speed"
 
       - name: Photo Cull log
@@ -59,6 +75,7 @@ jobs:
         run: cat "$HOME/Library/Logs/Photo Cull.log" || true
 
       - uses: actions/upload-artifact@v4
+        if: matrix.os == 'macos-15'
         with:
           name: PhotoCull-mac
           path: dist/PhotoCull-mac.zip

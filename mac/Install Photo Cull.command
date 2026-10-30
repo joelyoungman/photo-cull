@@ -75,11 +75,19 @@ done
 iconutil -c icns "$ICONSET" -o "$BUNDLE/Contents/Resources/PhotoCull.icns" 2>/dev/null || true
 # Files we made here never came from the internet, so macOS won't ask about them again.
 xattr -dr com.apple.quarantine "$BUNDLE" "$APP_HOME/app" 2>/dev/null || true
+# A free "ad-hoc" signature made on this Mac (no Apple account): newer macOS refuses to open apps with none at all
+# (error -10669). Then tell macOS's app list about it.
+codesign --force --sign - "$BUNDLE" >/dev/null 2>&1 || echo "(couldn't sign the app; it may still open)"
+LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+[ -x "$LSREGISTER" ] && "$LSREGISTER" -f "$BUNDLE" >/dev/null 2>&1 || true
 touch "$BUNDLE"
 
 say "Done! Photo Cull is in $APPS."
 echo "Open it like any app (Launchpad, Spotlight, or the Applications folder). It opens in your web browser."
 if [ -z "${PHOTOCULL_NO_OPEN:-}" ]; then
-  open "$BUNDLE"
+  if ! open "$BUNDLE" 2>/dev/null; then
+    # Installed fine, but macOS wouldn't open the app this time: start Photo Cull directly instead.
+    "$BUNDLE/Contents/MacOS/Photo Cull" || true
+  fi
   echo "You can close this window."
 fi
