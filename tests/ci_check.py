@@ -62,6 +62,7 @@ def main(shoot, big=None):
     assert b"Photo Cull" in page, "review page missing"
     u = call("/api/update")
     assert u["current"] and u["current"] != "0", u  # the version check answers (the Update button relies on it)
+    assert u["latest"], f"couldn't reach GitHub for the latest version from the installed Python: {u}"
 
     p, peak, _ = analyse(shoot, pid)
     assert p["phase"] == "done", p

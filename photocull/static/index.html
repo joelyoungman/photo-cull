@@ -233,6 +233,7 @@ async function refreshStatus() {
     $("recentBox").classList.toggle("hidden", !s.recent.length);
     return false;
   }
+  if ($("work").classList.contains("hidden") && !$("start").classList.contains("hidden")) await opened();  // opened in another tab
   return true;
 }
 async function choose() {
@@ -257,7 +258,9 @@ async function opened() {
 async function load(first) {
   const keep = view[cur] && view[cur].key;
   const d = await api("/api/shots");
+  const otherShoot = data.path && d.path !== data.path;  // a shoot was opened in another tab
   data = d;
+  if (otherShoot) { cur = 0; sel = new Set(); anchorKey = null; first = true; }
   $("folderName").textContent = d.path;
   $("putBackBtn").textContent = "Put back from Deletes (" + d.in_deletes + ")";
   $("putBackBtn").classList.toggle("hidden", !d.in_deletes);
@@ -522,7 +525,8 @@ function goGroup(dir) {
 async function mark(fields) {
   const keys = overlay === "compare" ? [groupOf(view[cur])[compareSel]].filter(Boolean).map(s => s.key) : selectedKeys();
   if (!keys.length) return;
-  await api("/api/mark", {keys, ...fields});
+  try { await api("/api/mark", {keys, ...fields}); }
+  catch (e) { await load(true); return; }
   for (const t of data.shots) if (keys.includes(t.key)) Object.assign(t, fields);
   const advance = keys.length === 1 && $("advance").checked && "flag" in fields && fields.flag && overlay !== "compare";
   const keep = view[cur] ? view[cur].key : keys[0];
@@ -750,9 +754,12 @@ async function rescan() {
   try { await api("/api/reanalyse", {}); await load(false); } catch (e) {}
 }
 $("rescanBtn").onclick = rescan;
-window.addEventListener("focus", () => {
+window.addEventListener("focus", async () => {
+  // Coming back to this tab: show marks made in another tab (or another shoot opened there), and look for new photos.
+  if (!(await refreshStatus())) return;
   const p = lastProgress;
-  if (!$("work").classList.contains("hidden") && Date.now() - lastScan > 30000 && !(p && (p.phase === "analysing" || p.phase === "scanning"))) rescan();
+  if (Date.now() - lastScan > 30000 && !(p && (p.phase === "analysing" || p.phase === "scanning"))) rescan();
+  else { try { await load(false); render(); } catch (e) {} }
 });
 
 // While analysis runs, refresh every couple of seconds so photos appear as they're done.

@@ -101,21 +101,49 @@ def _v(text):
     return tuple(int(x) for x in text.lstrip("v").split(".") if x.isdigit())
 
 
+def _https_get(url, method="GET"):
+    """(status, final URL, body) using the Mac's own certificates if Python's don't verify (uv's Python can lack them)."""
+    import ssl
+    import urllib.request
+
+    req = urllib.request.Request(url, method=method, headers={"Accept": "application/vnd.github+json", "User-Agent": "photo-cull"})
+    contexts = [ssl.create_default_context()]
+    for bundle in ("/etc/ssl/cert.pem", "/private/etc/ssl/cert.pem"):
+        if Path(bundle).exists():
+            contexts.append(ssl.create_default_context(cafile=bundle))
+    error = None
+    for ctx in contexts:
+        try:
+            with urllib.request.urlopen(req, timeout=8, context=ctx) as r:
+                return r.status, r.geturl(), r.read()
+        except ssl.SSLError as e:
+            error = e  # try the next set of certificates
+        except urllib.error.URLError as e:
+            if not isinstance(getattr(e, "reason", None), ssl.SSLError):
+                raise
+            error = e
+    raise error
+
+
 def latest_version():
     """The newest release's version from GitHub, checked at most every 20 minutes. Only the version number is
-    fetched; nothing about the photos is sent. None if offline."""
+    fetched; nothing about the photos is sent. None if it can't be checked (offline). Failures are logged."""
     import json
-    import urllib.request
+    import re
 
     if time.time() - state["checked"] > 20 * 60:
         state["checked"] = time.time()
+        found = None
         try:
-            req = urllib.request.Request(f"https://api.github.com/repos/{REPO}/releases/latest",
-                                         headers={"Accept": "application/vnd.github+json", "User-Agent": "photo-cull"})
-            with urllib.request.urlopen(req, timeout=5) as r:
-                state["latest"] = json.load(r)["tag_name"].lstrip("v")
-        except Exception:
-            pass
+            found = json.loads(_https_get(f"https://api.github.com/repos/{REPO}/releases/latest")[2])["tag_name"]
+        except Exception as e:
+            print(f"update check: GitHub API failed: {e!r}", flush=True)
+            try:  # the releases page redirects to the latest tag, and isn't rate-limited like the API
+                m = re.search(r"/releases/tag/([^/?#]+)", _https_get(f"https://github.com/{REPO}/releases/latest", "HEAD")[1])
+                found = m[1] if m else None
+            except Exception as e2:
+                print(f"update check: releases page failed too: {e2!r}", flush=True)
+        state["latest"] = found.lstrip("v") if found else None  # never keep an old answer as if it were current
     return state["latest"]
 
 
