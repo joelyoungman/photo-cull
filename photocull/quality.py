@@ -121,6 +121,67 @@ def faces(img):
     return out
 
 
+SFACE = ("face_recognition_sface_2021dec.onnx",
+         "https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx",
+         "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79")
+MIN_MATCH_PX = 32  # at the 1600 px preview; smaller faces are too blurry to tell people apart
+
+
+def sface_model(folder):
+    """Path to OpenCV's SFace face-recognition model (Apache-2.0, 39 MB). It's only needed for "exclude a person",
+    so it's downloaded the first time that's used (and checked against its known SHA-256), not shipped in every
+    install and update."""
+    import hashlib
+    import urllib.request
+
+    name, url, sha = SFACE
+    path = Path(folder) / name
+    if path.exists():
+        return path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".part")
+    with urllib.request.urlopen(url, timeout=120) as r, open(tmp, "wb") as f:
+        while chunk := r.read(1 << 20):
+            f.write(chunk)
+    if hashlib.sha256(tmp.read_bytes()).hexdigest() != sha:
+        tmp.unlink()
+        raise OSError("the face-matching model didn't download correctly; try again")
+    tmp.replace(path)
+    return path
+
+
+def face_vectors(img, boxes, model_path):
+    """[unit vector, or None if too small / not found] for each face box (fractions of img, a PIL RGB image).
+    YuNet finds the faces again (for the eye and mouth points SFace aligns on); each box takes the best overlap."""
+    import cv2
+
+    det, _, _ = _models()
+    if getattr(_local, "rec_path", None) != str(model_path):
+        _local.rec = cv2.FaceRecognizerSF.create(str(model_path), "")
+        _local.rec_path = str(model_path)
+    bgr = cv2.cvtColor(np.asarray(img), cv2.COLOR_RGB2BGR)
+    h, w = bgr.shape[:2]
+    det.setInputSize((w, h))
+    _, found = det.detect(bgr)
+    found = [] if found is None else found
+    out = []
+    for bx, by, bw, bh in boxes:
+        x0, y0, x1, y1 = bx * w, by * h, (bx + bw) * w, (by + bh) * h
+        best, best_iou = None, 0.3
+        for f in found:
+            fx0, fy0, fx1, fy1 = f[0], f[1], f[0] + f[2], f[1] + f[3]
+            inter = max(0, min(x1, fx1) - max(x0, fx0)) * max(0, min(y1, fy1) - max(y0, fy0))
+            iou = inter / ((x1 - x0) * (y1 - y0) + f[2] * f[3] - inter + 1e-6)
+            if iou > best_iou:
+                best, best_iou = f, iou
+        if best is None or min(best[2], best[3]) < MIN_MATCH_PX:
+            out.append(None)
+            continue
+        v = _local.rec.feature(_local.rec.alignCrop(bgr, best)).ravel().astype(np.float32)
+        out.append(v / np.linalg.norm(v))
+    return out
+
+
 def embedding(img):
     """Unit vector describing what's in a small (~320 px) copy of the photo (MediaPipe image embedder, MobileNet V3, Apache-2.0).
     Close vectors mean the same kind of scene, not the same moment: grouping also needs time and pHash."""

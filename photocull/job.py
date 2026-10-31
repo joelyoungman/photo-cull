@@ -131,6 +131,9 @@ CREATE TABLE IF NOT EXISTS shots (
 CREATE TABLE IF NOT EXISTS marks (key TEXT PRIMARY KEY, rating INTEGER DEFAULT 0, flag TEXT DEFAULT '', updated REAL);
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS moves (dst TEXT PRIMARY KEY, src TEXT, key TEXT, at REAL);
+CREATE TABLE IF NOT EXISTS face_vecs (key TEXT, i INTEGER, sig TEXT, vec BLOB, PRIMARY KEY (key, i));
+CREATE TABLE IF NOT EXISTS people_out (id INTEGER PRIMARY KEY, key TEXT, i INTEGER, vec BLOB, created REAL);
+CREATE TABLE IF NOT EXISTS excluded (key TEXT, person INTEGER, sim REAL, PRIMARY KEY (key, person));
 """
 
 
@@ -215,6 +218,11 @@ class Job:
                 if p["done"] % 10 == 0:
                     self._invalidate()
         self._invalidate()
+        if not self._stop.is_set():
+            try:
+                check_excluded(self)
+            except Exception as e:  # never let this spoil the analysis itself
+                print(f"checking excluded people failed: {e!r}", flush=True)
         p.update(phase="stopped" if self._stop.is_set() else "done", current="", downloading=False,
                  finished=time.time(), seconds=round(time.time() - p["started"], 1))
 
@@ -329,8 +337,11 @@ class Job:
                 out.append(_public(r, gid, len(members), score, r is best, reasons if r is best else [],
                                    _problems(r, sharp_median), marks.get(r["key"], (0, ""))))
         scores = _sharp_scores(ok)
+        with self.lock:
+            excluded = {k for (k,) in self.db.execute("SELECT DISTINCT key FROM excluded")}
         for s in out:
             s["sharp_score"] = scores.get(s["key"])
+            s["excluded"] = s["key"] in excluded
         for r in rows:
             if r["error"] or not r["sig"]:
                 out.append({"key": r["key"], "name": Path(r["key"]).name, "files": json.loads(r["files"]), "error": r["error"] or "not analysed yet",
@@ -494,6 +505,147 @@ def moved_count(job):
     return sum((job.root / d).exists() for (d,) in rows)
 
 
+# ---------- excluding a person (someone who asked not to be in any photos) ----------
+
+SAME_PERSON = 0.363  # SFace cosine similarity: OpenCV's recommended "same person" threshold
+MAYBE_PERSON = 0.28  # shown for her to decide, but not ticked
+
+
+def _face_vecs(job, keys=None):
+    """{(key, i): unit vector} for every face in the shoot (or these shots), worked out from the large previews the
+    first time and kept. Faces too small to recognise are left out."""
+    model = quality.sface_model(state_root() / "models")
+    with job.lock:
+        rows = job.db.execute("SELECT key, sig, faces FROM shots WHERE error IS NULL AND sig IS NOT NULL").fetchall()
+        have = {(k, i): (s, v) for k, i, s, v in job.db.execute("SELECT key, i, sig, vec FROM face_vecs")}
+    out = {}
+    for key, sig, faces in rows:
+        if keys is not None and key not in keys:
+            continue
+        faces = json.loads(faces or "[]")
+        if not faces:
+            continue
+        if all(have.get((key, i), (None,))[0] == sig for i in range(len(faces))):
+            vecs = [have[(key, i)][1] for i in range(len(faces))]
+            vecs = [np.frombuffer(v, dtype=np.float32) if v else None for v in vecs]
+        else:
+            from PIL import Image
+
+            try:
+                img = Image.open(job.thumb(key, "l")).convert("RGB")
+            except OSError:
+                continue
+            vecs = quality.face_vectors(img, [f["box"] for f in faces], model)
+            with job.lock:
+                for i, v in enumerate(vecs):
+                    job.db.execute("INSERT OR REPLACE INTO face_vecs VALUES (?, ?, ?, ?)",
+                                   (key, i, sig, v.astype(np.float32).tobytes() if v is not None else None))
+        for i, v in enumerate(vecs):
+            if v is not None:
+                out[(key, i)] = v
+    return out
+
+
+def find_person(job, key, i):
+    """Every photo in the shoot that seems to include the person whose face is face i of shot key: [{key, i, sim,
+    likely}] best match per photo, most alike first. 'likely' ones are ticked for her; the rest are 'maybe'."""
+    vecs = _face_vecs(job)
+    target = vecs.get((key, i))
+    if target is None:
+        raise ValueError("that face is too small or unclear to recognise; try a photo where they're bigger")
+    best = {}
+    for (k, j), v in vecs.items():
+        sim = float(target @ v)
+        if sim >= MAYBE_PERSON and sim > best.get(k, (None, -1))[1]:
+            best[k] = (j, sim)
+    best[key] = (i, 1.0)
+    return sorted(({"key": k, "i": j, "sim": round(s, 3), "likely": s >= SAME_PERSON} for k, (j, s) in best.items()),
+                  key=lambda m: -m["sim"])
+
+
+def exclude_person(job, key, i, keys):
+    """Remember this person as excluded and mark these photos X with an "excluded person" badge."""
+    vec = _face_vecs(job, {key}).get((key, i))
+    if vec is None:
+        raise ValueError("that face is too small or unclear to recognise")
+    with job.lock:
+        cur = job.db.execute("INSERT INTO people_out (key, i, vec, created) VALUES (?, ?, ?, ?)",
+                             (key, i, vec.astype(np.float32).tobytes(), time.time()))
+        person = cur.lastrowid
+        for k in keys:
+            job.db.execute("INSERT OR REPLACE INTO excluded VALUES (?, ?, ?)", (k, person, None))
+    job.mark(keys, flag="reject")
+    return {"person": person, "marked": len(keys)}
+
+
+def check_excluded(job):
+    """After an analysis: photos added since that clearly show an excluded person get marked X too."""
+    with job.lock:
+        people = job.db.execute("SELECT id, vec FROM people_out").fetchall()
+        done = {(k, p) for k, p in job.db.execute("SELECT key, person FROM excluded")}
+        seen = {k for (k,) in job.db.execute("SELECT DISTINCT key FROM face_vecs")}
+        keys = {k for (k,) in job.db.execute("SELECT key FROM shots WHERE error IS NULL AND sig IS NOT NULL")}
+    if not people:
+        return
+    new = keys - seen  # shots whose faces haven't been compared yet
+    if not new:
+        return
+    vecs = _face_vecs(job, new)
+    hits = []
+    for person, pv in people:
+        pv = np.frombuffer(pv, dtype=np.float32)
+        for (k, _), v in vecs.items():
+            if (k, person) not in done and float(pv @ v) >= SAME_PERSON:
+                hits.append((k, person, float(pv @ v)))
+                done.add((k, person))
+    if hits:
+        with job.lock:
+            for k, person, sim in hits:
+                job.db.execute("INSERT OR REPLACE INTO excluded VALUES (?, ?, ?)", (k, person, sim))
+        job.mark(sorted({k for k, _, _ in hits}), flag="reject")
+
+
+def excluded_people(job):
+    with job.lock:
+        rows = job.db.execute("SELECT p.id, p.key, p.i, COUNT(e.key) FROM people_out p LEFT JOIN excluded e "
+                              "ON e.person = p.id GROUP BY p.id ORDER BY p.created").fetchall()
+    return [{"id": pid, "key": k, "i": i, "photos": n} for pid, k, i, n in rows]
+
+
+def stop_excluding(job, person):
+    """Forget an excluded person. Their photos lose the badge, and lose the X unless another excluded person is in them."""
+    with job.lock:
+        keys = [k for (k,) in job.db.execute("SELECT key FROM excluded WHERE person = ?", (person,))]
+        job.db.execute("DELETE FROM excluded WHERE person = ?", (person,))
+        job.db.execute("DELETE FROM people_out WHERE id = ?", (person,))
+        still = {k for (k,) in job.db.execute("SELECT DISTINCT key FROM excluded")}
+    unmark = [k for k in keys if k not in still]
+    marks = job._marks()
+    job.mark([k for k in unmark if marks.get(k, (0, ""))[1] == "reject"], flag="")
+    return {"unmarked": len(unmark)}
+
+
+def face_crop(job, key, i):
+    """A small square JPEG of face i in shot key, cut from the large preview, for the review list."""
+    import io
+
+    from PIL import Image
+
+    with job.lock:
+        row = job.db.execute("SELECT faces FROM shots WHERE key = ?", (key,)).fetchone()
+    faces = json.loads(row[0] or "[]") if row else []
+    if not 0 <= i < len(faces):
+        raise ValueError("no such face")
+    img = Image.open(job.thumb(key, "l"))
+    x, y, w, h = faces[i]["box"]
+    cx, cy, side = (x + w / 2) * img.width, (y + h / 2) * img.height, max(w * img.width, h * img.height) * 1.6
+    crop = img.crop((int(cx - side / 2), int(cy - side / 2), int(cx + side / 2), int(cy + side / 2))).convert("RGB")
+    crop.thumbnail((160, 160))
+    buf = io.BytesIO()
+    crop.save(buf, "JPEG", quality=85)
+    return buf.getvalue()
+
+
 # ---------- helpers ----------
 
 def _describe(path, e):
@@ -640,7 +792,9 @@ def _public(r, gid, size, score, suggested, reasons, problems, mark):
         "sharpness": r["sharpness"], "brightness": r["brightness"],
         "faces": len(r["faces"]), "main_faces": len(fs),
         "eyes_open": sum(f["closed"] < quality.EYES_CLOSED for f in judged), "smiling": sum(f["smile"] >= quality.SMILING for f in judged),
-        "face_boxes": [f["box"] + [1 if f["closed"] is not None and f["closed"] >= quality.EYES_CLOSED else 0] for f in fs],
+        # every face, background ones too: [x, y, w, h, eyes shut, main face, index]
+        "face_boxes": [f["box"] + [1 if f["closed"] is not None and f["closed"] >= quality.EYES_CLOSED else 0, int(f["main"]), i]
+                       for i, f in enumerate(r["faces"])],
         "group": gid, "group_size": size, "score": score, "suggested": suggested, "reasons": reasons, "problems": problems,
         "rating": mark[0], "flag": mark[1], "error": None,
     }

@@ -314,6 +314,32 @@ async def deletes(request):
     raise ValueError("unknown action")
 
 
+async def person(request):
+    """Excluding someone who asked not to be in the photos. action: "find" (key, i) -> likely and maybe matches;
+    "exclude" (key, i, keys) -> mark those X; "list"; "stop" (id)."""
+    j = need_job()
+    body = await request.json()
+    action = body.get("action")
+    if action == "find":
+        key = known_keys(j, [body["key"]])[0]
+        return JSONResponse({"matches": await run_in_threadpool(jobs.find_person, j, key, int(body["i"]))})
+    if action == "exclude":
+        key = known_keys(j, [body["key"]])[0]
+        keys = known_keys(j, body["keys"])
+        return JSONResponse(await run_in_threadpool(jobs.exclude_person, j, key, int(body["i"]), keys))
+    if action == "list":
+        return JSONResponse({"people": await run_in_threadpool(jobs.excluded_people, j)})
+    if action == "stop":
+        return JSONResponse(await run_in_threadpool(jobs.stop_excluding, j, int(body["id"])))
+    raise ValueError("unknown action")
+
+
+async def face(request):
+    j = need_job()
+    data = await run_in_threadpool(jobs.face_crop, j, request.query_params.get("key", ""), int(request.query_params.get("i", "-1")))
+    return Response(data, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=60"})
+
+
 async def open_file(request):
     j = need_job()
     body = await request.json()
@@ -372,6 +398,8 @@ app = Starlette(routes=[
     Route("/api/openfile", endpoint(open_file), methods=["POST"]),
     Route("/api/openselects", endpoint(open_selects), methods=["POST"]),
     Route("/api/deletes", endpoint(deletes), methods=["POST"]),
+    Route("/api/person", endpoint(person), methods=["POST"]),
+    Route("/face", endpoint(face)),
     Route("/api/reanalyse", endpoint(reanalyse), methods=["POST"]),
     Route("/api/quit", endpoint(quit_app), methods=["POST"]),
     Route("/api/update", endpoint(update), methods=["GET", "POST"]),
