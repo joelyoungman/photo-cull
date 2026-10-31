@@ -662,6 +662,9 @@ async function checkUpdate(force) {
   } catch (e) { if (force) v.textContent = "couldn't check"; }
 }
 $("versionBtn").onclick = () => checkUpdate(true);
+// Photo Cull may stay open for days: look again every half hour, and whenever she comes back to the page.
+setInterval(() => checkUpdate(false), 30 * 60 * 1000);
+window.addEventListener("focus", () => checkUpdate(false));
 function updateNow() {
   const latest = $("updateBtn").dataset.latest;
   modal(c => {

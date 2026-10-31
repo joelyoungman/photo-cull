@@ -102,12 +102,12 @@ def _v(text):
 
 
 def latest_version():
-    """The newest release's version from GitHub, checked at most every 6 hours. Only the version number is
+    """The newest release's version from GitHub, checked at most every 20 minutes. Only the version number is
     fetched; nothing about the photos is sent. None if offline."""
     import json
     import urllib.request
 
-    if time.time() - state["checked"] > 6 * 3600:
+    if time.time() - state["checked"] > 20 * 60:
         state["checked"] = time.time()
         try:
             req = urllib.request.Request(f"https://api.github.com/repos/{REPO}/releases/latest",

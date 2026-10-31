@@ -32,7 +32,7 @@ at any point.
 **Updates:** when there's a new version, Photo Cull shows an **Update** button at the top. Clicking the version
 number next to it checks straight away. One click: it closes,
 updates itself and reopens, keeping your stars and picks. To check for updates, Photo Cull asks GitHub for the
-latest version number at most every 6 hours. Nothing about your photos is ever sent.
+latest version number at most every 20 minutes. Nothing about your photos is ever sent.
 
 For Joel or anyone comfortable with Terminal, this one line also installs or updates:
 `curl -fsSL https://github.com/joelyoungman/photo-cull/releases/latest/download/install.sh | bash`
