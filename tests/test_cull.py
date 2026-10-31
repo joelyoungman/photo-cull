@@ -194,3 +194,51 @@ def test_exclude_a_person(job):
     jobs.stop_excluding(job, people[0]["id"])
     s = by_name(job)
     assert not s["DSC00104"]["excluded"] and s["DSC00104"]["flag"] == "pick"  # back to the pick it had before
+
+
+def test_grain_is_not_detail():
+    """High-ISO grain mustn't make a soft frame look sharp (the old measure rated a blurred, grainy face above a
+    sharp clean one)."""
+    import numpy as np
+    import cv2
+    from photocull.quality import detail
+
+    rng = np.random.default_rng(0)
+    scene = cv2.resize(rng.uniform(0, 255, (60, 80)).astype(np.float32), (320, 240), interpolation=cv2.INTER_CUBIC)
+    sharp = detail(scene)
+    soft_grainy = detail(cv2.GaussianBlur(scene, (0, 0), 2.5) + rng.normal(0, 10, scene.shape).astype(np.float32))
+    assert soft_grainy < 0.5 * sharp
+    # brightness and contrast don't change the reading much
+    assert abs(detail(scene * 0.4) - sharp) < 0.1 * sharp
+
+
+def _frame(key, sharp, closed=0.1, smile=0.6, x=0.4):
+    face = {"box": [x, 0.3, 0.2, 0.3], "main": True, "sharp": sharp, "closed": closed, "smile": smile, "focus": False}
+    return {"key": key, "faces": [face], "sharpness": 500.0, "brightness": 120, "dark": 0.0, "blown": 0.0,
+            "focus_x": None, "focus_y": None, "focus_sharp": None}
+
+
+def test_soft_frame_never_suggested():
+    from photocull.job import _score
+
+    # the soft frame has open eyes and a smile; the sharp one has its eyes shut. Focus wins.
+    scored = {r["key"]: (score, soft) for r, score, _, soft, _ in _score([_frame("a", 2.0), _frame("b", 9.0, closed=0.9, smile=0)])}
+    assert scored["a"][1] and not scored["b"][1]
+    # a different person in the same burst isn't "softer than the others" just because their face is
+    scored = {r["key"]: soft for r, _, _, soft, _ in _score([_frame("a", 4.0, x=0.05), _frame("b", 12.0, x=0.7)])}
+    assert not scored["a"]
+
+
+def test_focus_point_and_iso_from_raw(tmp_path):
+    """The camera's focus point and ISO are read from Sony and Panasonic RAW files (CC0 samples from raw.pixls.us)."""
+    from tests.make_samples import make
+    from photocull import photos
+
+    shoot = make(tmp_path, with_raw=True)
+    arw = next(shoot.rglob("*.ARW"))
+    assert photos.focus_point(arw.read_bytes()[:1 << 20]) is not None
+    rw2 = next(shoot.rglob("*.RW2"))
+    preview, _, _ = photos._raw_preview(rw2)
+    assert photos.focus_point(preview) is not None
+    shot = photos.Shot(key="x", files=[rw2.relative_to(shoot).as_posix()])
+    assert photos.shot_exif(shoot, shot, preview)["iso"] == 400

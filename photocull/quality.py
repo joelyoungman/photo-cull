@@ -18,6 +18,9 @@ MAIN_FACE = 0.45  # faces narrower than this share of the biggest face are backg
 EYES_CLOSED = 0.5  # MediaPipe eyeBlink score above this: eye closed
 SMILING = 0.45  # mean mouthSmile score above this: smiling
 
+EYES_PX = 96  # the gap between the eyes is scaled to this (never up) before their sharpness is measured
+SPOT = 0.06  # the patch measured around the camera's focus point, as a share of the photo's width each side
+
 _local = threading.local()  # OpenCV DNN and MediaPipe objects aren't safe to share between threads
 
 
@@ -30,6 +33,61 @@ def sharpness(gray):
     h, w = lap.shape
     tiles = [lap[y * h // 4:(y + 1) * h // 4, x * w // 4:(x + 1) * w // 4] for y in range(4) for x in range(4)]
     return float(max(t.var() for t in tiles))
+
+
+_NOISE_K = np.array([[1, -2, 1], [-2, 4, -2], [1, -2, 1]], np.float32)  # sees grain, hardly sees smooth shading
+_NOISE_SHARE = 0.112  # what detail() measures on pure grain of strength 1 (worked out on random noise)
+
+
+def detail(gray):
+    """How much fine detail a patch of a grayscale (float32) photo has: variance of the Laplacian after a light blur
+    (sigma 1), less the part that is only grain. High-ISO grain looks like detail to a plain sharpness measure, so a
+    soft frame at ISO 6400 could beat a sharp one at ISO 400. The grain's strength is estimated from the patch itself
+    (median, so the real edges in it barely count) and its share taken off. Higher is sharper; about 0-200."""
+    import cv2
+
+    if gray.size == 0 or min(gray.shape) < 8:
+        return None
+    measured = float(cv2.Laplacian(cv2.GaussianBlur(gray, (0, 0), 1.0), cv2.CV_32F).var())
+    grain = 1.4826 * float(np.median(np.abs(cv2.filter2D(gray, cv2.CV_32F, _NOISE_K)[1:-1, 1:-1]))) / 6
+    # per unit of the patch's own contrast, so a dim or flat-lit face isn't called soft just for being dim
+    return 1000 * max(0.0, measured - _NOISE_SHARE * grain ** 2) / (float(gray.var()) + 25)
+
+
+def eyes_detail(gray, landmarks, box):
+    """Sharpness of the eyes (where focus matters in a portrait) in a big grayscale photo. The eye area is scaled
+    so the gap between the eyes is EYES_PX, so faces of any size, from any camera, measure alike; a face smaller
+    than that is measured as it is. Falls back to the whole face if the eye points look wrong."""
+    import cv2
+
+    (rx, ry), (lx, ly) = landmarks
+    gap = float(np.hypot(lx - rx, ly - ry))
+    x, y, w, h = box
+    if gap < 0.2 * w or gap > 0.8 * w:
+        cx, cy, half_w, half_h, scale = x + w / 2, y + h / 2, w / 2, h / 2, min(1.0, 2.5 * EYES_PX / max(w, 1))
+    else:
+        cx, cy, half_w, half_h, scale = (rx + lx) / 2, (ry + ly) / 2, 1.1 * gap, 0.5 * gap, min(1.0, EYES_PX / gap)
+    H, W = gray.shape
+    patch = gray[int(max(0, cy - half_h)):int(min(H, cy + half_h)), int(max(0, cx - half_w)):int(min(W, cx + half_w))]
+    if patch.size == 0:
+        return None
+    if scale < 1:
+        patch = cv2.resize(patch, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+    return detail(patch)
+
+
+def spot_detail(gray, point):
+    """Sharpness around where the camera focused, (x, y) as fractions; at a fixed size relative to the photo."""
+    import cv2
+
+    H, W = gray.shape
+    r = SPOT * W
+    cx, cy = point[0] * W, point[1] * H
+    patch = gray[int(max(0, cy - r)):int(min(H, cy + r)), int(max(0, cx - r)):int(min(W, cx + r))]
+    scale = min(1.0, 256 / max(1.0, 2 * r))
+    if patch.size and scale < 1:
+        patch = cv2.resize(patch, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+    return detail(patch)
 
 
 def exposure(gray):
@@ -92,9 +150,12 @@ def _face_reading(rgb, box, marker, mp):
     return round(closed, 3), round(smile, 3)
 
 
-def faces(img):
-    """[{box: [x, y, w, h] as fractions, main, sharp, closed, smile}] for the faces in a PIL RGB image.
-    'main' faces are the people the photo is of; small faces behind them are counted but not judged."""
+def faces(img, big_gray=None, focus=None):
+    """[{box: [x, y, w, h] as fractions, main, sharp, closed, smile, focus}] for the faces in a PIL RGB image.
+    'main' faces are the people the photo is of; small faces behind them are counted but not judged.
+    sharp is measured on the eyes in big_gray (the photo at the biggest size we have, as grayscale float32), so a
+    slightly soft face isn't hidden by shrinking it. focus is True for the face the camera focused on, when the
+    camera says where that was (focus: (x, y) fractions)."""
     import cv2
 
     det, marker, mp = _models()
@@ -106,16 +167,21 @@ def faces(img):
     found = [] if found is None else found
     biggest = max((float(f[2]) for f in found), default=0)
     out = []
-    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    if big_gray is None:
+        big_gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    k = big_gray.shape[1] / width  # from this image's pixels to the big one's
     for f in found:
         x, y, w, h = (float(v) for v in f[:4])
         face = {"box": [round(x / width, 4), round(y / height, 4), round(w / width, 4), round(h / height, 4)],
-                "main": bool(w >= MIN_FACE_PX and w >= MAIN_FACE * biggest), "sharp": None, "closed": None, "smile": None}
+                "main": bool(w >= MIN_FACE_PX and w >= MAIN_FACE * biggest), "sharp": None, "closed": None, "smile": None,
+                "focus": False}
+        if focus is not None:  # the focus point is on this face, or close to it (the camera may have used an eye)
+            fx, fy = focus[0] * width, focus[1] * height
+            face["focus"] = bool(x - 0.25 * w <= fx <= x + 1.25 * w and y - 0.25 * h <= fy <= y + 1.25 * h)
         if face["main"]:
-            x0, y0 = max(0, int(x)), max(0, int(y))
-            patch = gray[y0:int(y + h), x0:int(x + w)]
-            if patch.size:  # every face scaled to 112 px so big and small faces score alike
-                face["sharp"] = round(float(cv2.Laplacian(cv2.resize(patch, (112, 112)).astype(np.float32), cv2.CV_32F).var()), 1)
+            eyes = ((float(f[4]) * k, float(f[5]) * k), (float(f[6]) * k, float(f[7]) * k))
+            s = eyes_detail(big_gray, eyes, (x * k, y * k, w * k, h * k))
+            face["sharp"] = round(s, 1) if s is not None else None
             face["closed"], face["smile"] = _face_reading(rgb, (x, y, w, h), marker, mp)
         out.append(face)
     return out
@@ -212,16 +278,20 @@ def phash(img):
     return f"{int(''.join('1' if b else '0' for b in bits), 2):016x}"
 
 
-def assess(img):
-    """Everything we judge about one photo, from a PIL RGB copy ANALYSE_PX on its long side. Each smaller size
-    is made from the one before, not from the full photo."""
+def assess(img, big=None, focus=None):
+    """Everything we judge about one photo, from a PIL RGB copy ANALYSE_PX on its long side. big is the photo at
+    the biggest size we have (for judging focus on the eyes and at the focus point); focus is where the camera
+    focused, (x, y) fractions, if it says. Each smaller size is made from the one before, not from the full photo."""
     import cv2
 
     from .photos import shrink
 
+    big_gray = cv2.cvtColor(np.asarray(big if big is not None else img), cv2.COLOR_RGB2GRAY).astype(np.float32)
     small = shrink(img, SHARP_PX)
     gray = cv2.cvtColor(np.asarray(small), cv2.COLOR_RGB2GRAY).astype(np.float32)
     e = exposure(gray.astype(np.uint8))
     tiny = shrink(small, 320)
-    return {"sharpness": round(sharpness(gray), 1), **e, "faces": faces(img),
+    spot = spot_detail(big_gray, focus) if focus else None
+    return {"sharpness": round(sharpness(gray), 1), **e, "faces": faces(img, big_gray, focus),
+            "focus": list(focus) if focus else None, "focus_sharp": round(spot, 1) if spot is not None else None,
             "phash": phash(tiny), "vec": embedding(tiny)}

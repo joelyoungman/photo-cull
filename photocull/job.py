@@ -21,7 +21,7 @@ import numpy as np
 
 from . import photos, quality
 
-ANALYSIS_V = 2  # bump to re-analyse every shot after changing what we measure
+ANALYSIS_V = 3  # bump to re-analyse every shot after changing what we measure (3: focus judged on the eyes)
 WORKERS = 2  # at most 2 cores busy (measured: 1.7 on average); the rest of the computer stays free
 THUMB_PX = {"s": 400, "l": quality.ANALYSE_PX}  # RAW previews are only 1600-1900 px anyway
 FOCUS_FROM, FOCUS_FULL = 15.0, 45.0  # local sharpness where the focus overlay starts to glow, and where it's full
@@ -35,6 +35,14 @@ MOMENT_GAP = 45  # ...or within this many seconds and looks like a recent member
 MOMENT_SPAN = 180  # a look-alike group never spans longer than this
 LOOKALIKE_PHASH = 20  # pHash bits that may differ (out of 64)...
 LOOKALIKE_COS = 0.80  # ...with the embedder agreeing it's the same scene
+
+# Focus. A frame is soft when its subject (the face the camera focused on, else the sharpest face, else the spot the
+# camera focused on) has less than SOFT_SHARE of the detail the same subject has in the sharpest frame of its group,
+# or its faces' eyes measure below FACE_SOFT (quality.detail: sharp eyes are about 7-10, slight misfocus 5, clearly
+# soft 2). A soft frame is never suggested; a group of only soft frames gets no suggestion.
+SOFT_SHARE = 0.55
+FACE_SOFT = 3.0
+SAME_SPOT = 0.12  # focus points this close (share of the photo) are on the same subject, so they can be compared
 
 
 def state_root():
@@ -126,7 +134,7 @@ CREATE TABLE IF NOT EXISTS shots (
   key TEXT PRIMARY KEY, files TEXT, source TEXT, sig TEXT, error TEXT,
   taken TEXT, camera TEXT, serial TEXT, iso INTEGER, exposure TEXT, fnumber REAL, focal REAL,
   width INTEGER, height INTEGER, sharpness REAL, brightness REAL, dark REAL, blown REAL,
-  faces TEXT, phash TEXT, vec BLOB
+  faces TEXT, phash TEXT, vec BLOB, focus_x REAL, focus_y REAL, focus_sharp REAL
 );
 CREATE TABLE IF NOT EXISTS marks (key TEXT PRIMARY KEY, rating INTEGER DEFAULT 0, flag TEXT DEFAULT '', updated REAL);
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
@@ -148,9 +156,14 @@ class Job:
         self.thumbs.mkdir(parents=True, exist_ok=True)
         (self.dir / "job.json").write_text(json.dumps({"path": str(self.root), "opened": time.time()}), "utf-8")
         self.lock = threading.Lock()  # one connection, shared by the server threads and the analysis
+        self.id = self.dir.name  # names the shoot in image addresses, so the browser never reuses another shoot's
         self.db = sqlite3.connect(self.dir / "cull.db", check_same_thread=False, isolation_level=None)
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript(SCHEMA)
+        have = [c[1] for c in self.db.execute("PRAGMA table_info(shots)")]
+        for col in ("focus_x", "focus_y", "focus_sharp"):  # databases from before v0.3
+            if col not in have:
+                self.db.execute(f"ALTER TABLE shots ADD COLUMN {col} REAL")
         if "prev" not in [c[1] for c in self.db.execute("PRAGMA table_info(excluded)")]:
             self.db.execute("ALTER TABLE excluded ADD COLUMN prev TEXT")  # the mark a photo had before it was excluded
         v = self.db.execute("SELECT value FROM meta WHERE key='analysis_v'").fetchone()
@@ -238,14 +251,18 @@ class Job:
         self.progress["downloading"] = online_only(path)
         row = {"key": shot.key, "files": json.dumps(shot.files), "source": shot.source, "sig": sig, "error": None}
         try:
-            img, (w, h), preview = photos.open_photo(path)
+            big, (w, h), preview = photos.open_photo(path)
             exif = photos.shot_exif(self.root, shot, preview)
-            img = photos.shrink(img, quality.ANALYSE_PX)
-            q = quality.assess(img)
+            focus = photos.shot_focus_point(self.root, shot, preview)
+            img = photos.shrink(big, quality.ANALYSE_PX)
+            q = quality.assess(img, big, focus)
+            del big
             row.update(taken=exif.get("taken"), camera=exif.get("camera"), serial=exif.get("serial"), iso=exif.get("iso"),
                        exposure=exif.get("exposure"), fnumber=exif.get("fnumber"), focal=exif.get("focal"),
                        width=w, height=h, sharpness=q["sharpness"], brightness=q["brightness"], dark=q["dark"],
                        blown=q["blown"], faces=json.dumps(q["faces"]), phash=q["phash"],
+                       focus_x=focus[0] if focus else None, focus_y=focus[1] if focus else None,
+                       focus_sharp=q["focus_sharp"],
                        vec=q["vec"].astype(np.float32).tobytes())
             name = self._thumb_name(shot.key)
             for size, px in THUMB_PX.items():
@@ -334,10 +351,18 @@ class Job:
         out = []
         for gid, members in enumerate(groups):
             scored = _score(members)
-            best = max(scored, key=lambda s: s[1])[0] if len(members) > 1 else None
-            for r, score, reasons in scored:
+            # the suggestion is never a soft frame; if every frame is soft there is none, and the sharpest one
+            # stands for the group in "Best of each" so the moment isn't hidden
+            fine = [s for s in scored if not s[3]]
+            best = max(fine, key=lambda s: s[1])[0] if len(members) > 1 and fine else None
+            lead = best or max(scored, key=lambda s: (s[4], s[1]))[0]
+            for r, score, reasons, soft, _ in scored:
+                problems = _problems(r, sharp_median)
+                if soft and len(members) > 1 and not any(p in problems for p in ("blurry", "faces out of focus")):
+                    problems.insert(0, "softer than the others")
                 out.append(_public(r, gid, len(members), score, r is best, reasons if r is best else [],
-                                   _problems(r, sharp_median), marks.get(r["key"], (0, ""))))
+                                   problems, marks.get(r["key"], (0, ""))))
+                out[-1]["lead"] = r is lead
         scores = _sharp_scores(ok)
         with self.lock:
             excluded = {k for (k,) in self.db.execute("SELECT DISTINCT key FROM excluded")}
@@ -720,26 +745,66 @@ def _main_faces(r):
     return [f for f in r["faces"] if f["main"]]
 
 
+def _subject_face(fs):
+    """The subject of a photo of people: the face the camera focused on, else the sharpest face (in a group shot the
+    focus lands on someone; the rest may be a little softer and that's fine). None if no face could be judged."""
+    judged = [f for f in fs if f["sharp"] is not None]
+    if not judged:
+        return None
+    return max(judged, key=lambda f: (bool(f.get("focus")), f["sharp"]))
+
+
+def _subject_sharp(fs):
+    f = _subject_face(fs)
+    return f["sharp"] if f else None
+
+
+def _same_subject(a, b):
+    """Two frames' subject faces are about the same place and size, so very likely the same person."""
+    if a is None or b is None:
+        return False
+    (ax, ay, aw, ah), (bx, by, bw, bh) = a["box"], b["box"]
+    return abs((ax + aw / 2) - (bx + bw / 2)) <= 0.15 and abs((ay + ah / 2) - (by + bh / 2)) <= 0.15 and 0.6 <= aw / bw <= 1.6
+
+
+def _subjects(members):
+    """(how the group's frames are compared, [subject sharpness per frame]). Like is compared with like: the eyes
+    if every frame has a face, the camera's focus spot if it stayed on the same place in every frame, else the
+    sharpest part of each frame."""
+    faces = [_subject_sharp(_main_faces(r)) for r in members]
+    if all(s is not None for s in faces):
+        return "faces", faces
+    spots = [(r.get("focus_x"), r.get("focus_y"), r.get("focus_sharp")) for r in members]
+    if all(s[2] is not None for s in spots) and max(s[0] for s in spots) - min(s[0] for s in spots) <= SAME_SPOT \
+            and max(s[1] for s in spots) - min(s[1] for s in spots) <= SAME_SPOT:
+        return "spot", [s[2] for s in spots]
+    return "frame", [r["sharpness"] for r in members]
+
+
 def _score(members):
-    """[(shot, score 0-100, reasons it's the best)] for one group. Within a group shots are compared with each other:
-    sharpness of the faces (or the whole frame), everyone's eyes open, smiles, nobody missing, exposure."""
+    """[(shot, score 0-100, reasons it's the best, soft, subject sharpness)] for one group. Within a group shots are
+    compared with each other: focus on the subject first (a soft frame can't make up for it with a smile), then
+    everyone's eyes open, smiles, nobody missing, exposure."""
     faces = [_main_faces(r) for r in members]
-    by_face = all(fs and all(f["sharp"] for f in fs) for fs in faces)
-    sharp = [float(np.mean([f["sharp"] for f in fs])) if by_face else r["sharpness"] for r, fs in zip(members, faces)]
+    how, sharp = _subjects(members)
     top_sharp = max(sharp) or 1
+    top_face = _subject_face(faces[sharp.index(max(sharp))])
     most_faces = max(len(fs) for fs in faces)
     out = []
     for r, fs, s in zip(members, faces, sharp):
+        # softer than the sharpest frame counts only when it's the same subject (not someone else's face)
+        comparable = how != "faces" or _same_subject(_subject_face(fs), top_face)
+        soft = (len(members) > 1 and comparable and s < SOFT_SHARE * top_sharp) or (how == "faces" and s < FACE_SOFT)
         judged = [f for f in fs if f["closed"] is not None]
         eyes = sum(f["closed"] < quality.EYES_CLOSED for f in judged) / len(judged) if judged else 1
         smile = float(np.mean([f["smile"] for f in judged])) if judged else 0
         present = len(fs) / most_faces if most_faces else 1
         expo = 0 if quality.exposure_problem(r) else 1
-        sharp_rel = (s / top_sharp) ** 0.5
-        score = 40 * sharp_rel + 25 * eyes + 10 * smile + 15 * present + 10 * expo if most_faces else 75 * sharp_rel + 25 * expo
+        sharp_rel = s / top_sharp
+        score = 45 * sharp_rel + 25 * eyes + 10 * smile + 10 * present + 10 * expo if most_faces else 75 * sharp_rel + 25 * expo
         reasons = []
         if s == top_sharp:
-            reasons.append("sharpest faces" if by_face and most_faces else "sharpest")
+            reasons.append({"faces": "sharpest eyes", "spot": "sharpest where the camera focused"}.get(how, "sharpest"))
         if judged and eyes == 1:
             reasons.append("everyone's eyes open" if len(judged) > 1 else "eyes open")
         smiling = sum(f["smile"] >= quality.SMILING for f in judged)
@@ -747,7 +812,7 @@ def _score(members):
             reasons.append(f"{smiling} of {len(judged)} smiling" if len(judged) > 1 else "smiling")
         if expo:
             reasons.append("well exposed")
-        out.append((r, round(score, 1), reasons))
+        out.append((r, round(score, 1), reasons, soft, s))
     return out
 
 
@@ -765,9 +830,9 @@ def _sharp_scores(shots):
     frame = percentiles({r["key"]: r["sharpness"] for r in shots})
     faces = {}
     for r in shots:
-        fs = [f["sharp"] for f in _main_faces(r) if f["sharp"] is not None]
-        if fs:
-            faces[r["key"]] = max(fs)
+        s = _subject_sharp(_main_faces(r))
+        if s is not None:
+            faces[r["key"]] = s
     by_face = percentiles(faces) if len(faces) >= 3 else {}
     return {k: by_face.get(k, v) for k, v in frame.items()}
 
@@ -780,8 +845,8 @@ def _problems(r, sharp_median):
     elif r["sharpness"] < max(20.0, 0.25 * sharp_median):
         out.append("blurry")
     else:
-        fs = [f for f in _main_faces(r) if f["sharp"] is not None]
-        if fs and max(f["sharp"] for f in fs) < 25:
+        s = _subject_sharp(_main_faces(r))
+        if s is not None and s < FACE_SOFT:
             out.append("faces out of focus")
     judged = [f for f in _main_faces(r) if f["closed"] is not None]
     closed = sum(f["closed"] >= quality.EYES_CLOSED for f in judged)

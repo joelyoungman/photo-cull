@@ -96,7 +96,7 @@ The face-matching model (39 MB) downloads the first time you use this.
 ### What the suggestions mean
 
 - **Sharpness 0–100**: how sharp a photo is compared with the rest of this shoot (90 = sharper than 90% of it).
-  Photos of people are judged on their faces. It's shown on the photo (green / amber / red) and on each thumbnail, and
+  Photos of people are judged on their eyes. It's shown on the photo (green / amber / red) and on each thumbnail, and
   **Order: sharpest first** lists the shoot from sharpest to softest. It's a guide, not a verdict: a soft photo can
   still be the keeper.
 - **Which parts are sharp**: hover over the Sharpness badge, or press **S** to keep it on, and the in-focus parts of
@@ -105,9 +105,16 @@ The face-matching model (39 MB) downloads the first time you use this.
 - **Groups**: photos from the same camera taken within 1.5 s of each other (a burst, including the GH5's
   6K/4K Photo bursts), or within 45 s that look alike. Two bodies of the same model are kept apart by their card
   folders.
-- **★ Suggested**: in each group, the photo with the sharpest faces (or the sharpest frame, if it has no people),
-  everyone's eyes open, the most smiles, nobody missing, and good exposure. The badge says why. It's only a
-  suggestion: nothing is picked for you.
+- **★ Suggested**: in each group, the photo with the sharpest eyes (or, with no people, the sharpest spot where the
+  camera focused, or the sharpest frame), everyone's eyes open, the most smiles, nobody missing, and good exposure.
+  Focus comes first: a frame whose subject is soft is never suggested, however good the smile, and is marked
+  **softer than the others**. If every frame of a group is soft there's no suggestion; the sharpest one still shows
+  in **Best of each** so the moment isn't hidden. The badge says why. It's only a suggestion: nothing is picked for you.
+- **How focus is judged**: on the eyes, measured on the photo at full preview size (a camera JPEG is read at about
+  3000 px wide), so a slightly soft face isn't hidden by shrinking it. Sony and Panasonic cameras record where they
+  focused; the face at that spot is the subject. High-ISO grain is measured and taken out first, so it doesn't pass
+  for detail, and each frame is compared with the same person in the other frames of its burst. A RAW without its
+  JPEG twin is judged on its built-in preview (about 1600 px for the A7 III), which can miss slight misfocus.
 - **Blurry** is judged against the rest of the shoot, by the sharpest part of the frame, so a sharp subject on a
   soft background isn't called blurry. Fog, water and night skies can still score low.
 - **Eyes closed** looks at the main people in the frame, not small faces in the background.
@@ -131,9 +138,11 @@ storage.
 
 ## How it's built
 
-- `photocull/photos.py` finds the photos, pairs RAW and JPEG, and reads RAW previews and EXIF.
-- `photocull/quality.py` measures sharpness (Laplacian, sharpest of 4×4 tiles) and exposure. It finds faces with
-  YuNet and scores eyes and smiles with MediaPipe Face Landmarker blendshapes. It also describes each image with a
+- `photocull/photos.py` finds the photos, pairs RAW and JPEG, and reads RAW previews, EXIF (ISO too, including
+  Panasonic RW2's own ISO tag) and where Sony and Panasonic cameras focused (from their maker notes).
+- `photocull/quality.py` measures sharpness (Laplacian, sharpest of 4×4 tiles; for focus, the eyes and the
+  camera's focus spot, with grain taken out) and exposure. It finds faces with YuNet and scores eyes and smiles with
+  MediaPipe Face Landmarker blendshapes. It also describes each image with a
   small MediaPipe embedder, used to spot look-alikes.
 - `photocull/job.py` holds one shoot: analysis (2 threads, low priority, so the laptop stays cool), grouping and
   suggestions, marks, and copying to Selects.

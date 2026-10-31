@@ -6,6 +6,7 @@ preview the camera stores inside them (Sony ARW ~1600 px, Panasonic RW2 ~1900 px
 """
 import io
 import re
+import struct
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -159,7 +160,9 @@ def read_exif(path=None, data=None):
     if make and model and make.split()[0].lower() not in model.lower():
         camera = f"{make.split()[0].title()} {model}"
     taken = _date(text("EXIF DateTimeOriginal"), text("EXIF SubSecTimeOriginal")) or _date(text("Image DateTime"))
-    iso = number("EXIF ISOSpeedRatings")
+    # Panasonic RW2 files keep ISO in their own tag 0x0017; newer cameras may use the EXIF 2.3 names
+    iso = (number("EXIF ISOSpeedRatings") or number("EXIF PhotographicSensitivity")
+           or number("EXIF RecommendedExposureIndex") or number("Image Tag 0x0017"))
     return {
         "taken": taken.isoformat() if taken else None,
         "camera": camera or make,
@@ -171,17 +174,87 @@ def read_exif(path=None, data=None):
     }
 
 
-def shot_exif(root, shot, preview_bytes=None):
-    """EXIF for a shot: the JPEG twin first, then the RAW, then the RAW's preview (Panasonic RW2)."""
-    root = Path(root)
-    best = {}
+# ---------- where the camera focused ----------
+
+_TIFF_SIZES = {1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 6: 1, 7: 1, 8: 2, 9: 4, 10: 8, 11: 4, 12: 8, 13: 4}
+
+
+def _ifd(buf, base, offset, e):
+    """{tag: (type, value bytes)} for the TIFF directory at base + offset."""
+    out = {}
+    n = struct.unpack_from(e + "H", buf, base + offset)[0]
+    for i in range(min(n, 1000)):
+        p = base + offset + 2 + 12 * i
+        tag, kind, count = struct.unpack_from(e + "HHI", buf, p)
+        size = _TIFF_SIZES.get(kind, 1) * count
+        at = p + 8 if size <= 4 else base + struct.unpack_from(e + "I", buf, p + 8)[0]
+        out[tag] = (kind, buf[at:at + size])
+    return out
+
+
+def focus_point(data):
+    """(x, y) as fractions of the upright photo where the camera focused, from the maker notes of a Sony (ARW or
+    its JPEG) or Panasonic (JPEG, or a RW2's preview) photo; None when the camera doesn't say. data: the file's
+    first bytes (or a preview JPEG). Never raises."""
+    try:
+        base = 0 if data[:4] in (b"II*\x00", b"MM\x00*") else data.find(b"Exif\x00\x00", 0, 65536) + 6
+        if base < 6 and base != 0:
+            return None
+        e = "<" if data[base:base + 2] == b"II" else ">"
+        top = _ifd(data, base, struct.unpack_from(e + "I", data, base + 4)[0], e)
+        orientation = struct.unpack(e + "H", top[0x0112][1][:2])[0] if 0x0112 in top else 1
+        exif = _ifd(data, base, struct.unpack_from(e + "I", top[0x8769][1])[0], e)
+        note = exif[0x927C][1]
+        at = data.find(note[:64], base)
+        if note.startswith(b"Panasonic"):
+            kind, v = _ifd(data, base, at + 12 - base, e).get(0x004D, (0, b""))  # AFPointPosition, two rationals
+            n = struct.unpack(e + "4I", v)
+            x, y = n[0] / n[1], n[2] / n[3]
+        elif note.startswith(b"SONY") or top.get(0x010F, (0, b""))[1].upper().startswith(b"SONY"):
+            # Sony's maker note is a bare directory (older bodies prefix "SONY DSC"); FocusLocation is
+            # width, height, x, y in sensor pixels
+            tags = _ifd(data, base, at + (12 if note.startswith(b"SONY") else 0) - base, e)
+            w, h, px, py = struct.unpack(e + "4H", tags[0x2027][1])
+            if not (w and h and (px, py) != (0, 0)):
+                return None
+            x, y = px / w, py / h
+        else:
+            return None
+    except Exception:
+        return None
+    if not (0 < x < 1 and 0 < y < 1):
+        return None
+    # the camera reports it on the sensor; turn it the way the photo is shown
+    x, y = {3: (1 - x, 1 - y), 6: (1 - y, x), 8: (y, 1 - x)}.get(orientation, (x, y))
+    return round(x, 4), round(y, 4)
+
+
+def shot_focus_point(root, shot, preview_bytes=None):
+    """Where the camera focused for a shot: from the JPEG twin, the RAW, or the RAW's preview."""
     for source in (shot.image, shot.raw):
         if source:
-            best = read_exif(root / source)
-            if best.get("taken"):
-                return best
+            try:
+                with open(Path(root) / source, "rb") as f:
+                    found = focus_point(f.read(1 << 20))
+            except OSError:
+                found = None
+            if found:
+                return found
+    return focus_point(preview_bytes) if preview_bytes else None
+
+
+def shot_exif(root, shot, preview_bytes=None):
+    """EXIF for a shot: the JPEG twin first, then the RAW, then the RAW's preview (Panasonic RW2). A setting one of
+    them leaves out is taken from the next."""
+    root = Path(root)
+    found = [read_exif(root / source) for source in (shot.image, shot.raw) if source]
     if preview_bytes:
-        found = read_exif(data=preview_bytes)
-        if found.get("taken"):
-            return found
+        found.append(read_exif(data=preview_bytes))
+    found = [f for f in found if f]
+    found.sort(key=lambda f: not f.get("taken"))  # a file with no date taken is likely missing the rest too
+    best = {}
+    for f in found:
+        for k, v in f.items():
+            if best.get(k) is None:
+                best[k] = v
     return best

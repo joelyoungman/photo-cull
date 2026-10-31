@@ -235,7 +235,8 @@ async function api(path, body) {
   return j;
 }
 function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; }
-function img(key, size) { return "/img?size=" + size + "&key=" + encodeURIComponent(key); }
+// the shoot's id is in every image address: another shoot's DSC00001 is a different picture, not a cached one
+function img(key, size) { return "/img?size=" + size + "&job=" + data.job + "&key=" + encodeURIComponent(key); }
 function stars(n) { return n ? "★".repeat(n) : ""; }
 
 // ---------- start screen ----------
@@ -268,16 +269,21 @@ async function openPath(path) {
   catch (e) { alert("Couldn't open that folder: " + e.message); }
 }
 async function opened() {
+  // a fresh start for whichever shoot is open now, even the same one again
   $("start").classList.add("hidden"); $("work").classList.remove("hidden"); $("rescanBtn").classList.remove("hidden");
-  cur = 0; data = {shots: []};
+  cur = 0; data = {shots: []}; view = []; sel = new Set(); anchorKey = null;
+  if (overlay) toggleOverlay(overlay);
   await load(true);
 }
 
 // ---------- data ----------
+let loadSeq = 0;
 async function load(first) {
+  const seq = ++loadSeq;
   const keep = view[cur] && view[cur].key;
   const d = await api("/api/shots");
-  const otherShoot = data.path && d.path !== data.path;  // a shoot was opened in another tab
+  if (seq !== loadSeq) return;  // a newer load started meanwhile (a shoot was chosen): this answer may be the old shoot
+  const otherShoot = data.path && d.job !== data.job;  // a shoot was opened in another tab
   data = d;
   if (otherShoot) { cur = 0; sel = new Set(); anchorKey = null; first = true; }
   $("folderName").textContent = d.path;
@@ -312,12 +318,13 @@ function matches(s, f) {
   const p = s.problems || [];
   if (f === "problems") return p.length > 0 || !!s.error;
   if (f === "eyes") return p.some(x => x.startsWith("eyes closed"));
-  if (f === "blurry") return p.includes("blurry") || p.includes("faces out of focus");
+  if (f === "blurry") return p.includes("blurry") || p.includes("faces out of focus") || p.includes("softer than the others");
   return true;
 }
 function rebuild(keepKey) {
   const f = $("filter").value;
-  view = data.shots.filter(s => (mode === "all" || s.suggested || s.group_size === 1 || s.group == null) && matches(s, f));
+  // "Best of each": the suggestion, or the sharpest frame of a group with none (every frame soft), so no moment is hidden
+  view = data.shots.filter(s => (mode === "all" || s.suggested || s.lead || s.group_size === 1 || s.group == null) && matches(s, f));
   if ($("order").value === "sharp") view = [...view].sort((a, b) => (b.sharp_score ?? -1) - (a.sharp_score ?? -1));
   const i = keepKey ? view.findIndex(s => s.key === keepKey) : -1;
   cur = i >= 0 ? i : Math.min(cur, Math.max(0, view.length - 1));
@@ -412,7 +419,7 @@ function renderInfo() {
   add("Files:", s.files.map(f => f.split("/").pop().split(".").pop().toUpperCase()).join(" + "));
   if (s.taken) add("Taken:", s.taken.replace("T", " ").slice(0, 22));
   add("Camera:", s.camera);
-  if (s.exposure || s.fnumber) add("", [s.exposure && s.exposure + "s", s.fnumber && "f/" + s.fnumber, s.iso && "ISO " + s.iso, s.focal && s.focal + "mm"].filter(Boolean).join("  "));
+  if (s.exposure || s.fnumber || s.iso) add("", [s.exposure && s.exposure + "s", s.fnumber && "f/" + s.fnumber, s.iso && "ISO " + s.iso, s.focal && s.focal + "mm"].filter(Boolean).join("  "));
   if (s.sharp_score != null) add("Sharpness:", s.sharp_score + "/100" + (s.main_faces ? " (faces)" : ""));
   if (s.main_faces) add("Faces:", s.main_faces + " · eyes open " + s.eyes_open + " · smiling " + s.smiling);
   if (s.group_size > 1) add("Group:", (groupOf(s).indexOf(s) + 1) + " of " + s.group_size);
@@ -667,7 +674,7 @@ async function putBack() {
 }
 
 // ---------- excluding a person ----------
-function faceImg(key, i) { const im = el("img"); im.src = "/face?key=" + encodeURIComponent(key) + "&i=" + i; im.alt = ""; return im; }
+function faceImg(key, i) { const im = el("img"); im.src = "/face?job=" + data.job + "&key=" + encodeURIComponent(key) + "&i=" + i; im.alt = ""; return im; }
 function excludeIntro() {
   if (!showBoxes) toggleFaces();
   modal(c => {

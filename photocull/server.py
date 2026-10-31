@@ -185,10 +185,14 @@ def endpoint(fn):
     return wrapped
 
 
-def need_job():
+def need_job(request=None):
+    """The open shoot. Image requests name the shoot they were made for (?job=), so a page still showing the shoot
+    before can't be handed this shoot's photo of the same name (two shoots often both have a DSC00001)."""
     j = current()
     if not j:
         raise ValueError("no shoot open")
+    if request is not None and request.query_params.get("job", j.id) != j.id:
+        raise ValueError("that shoot isn't open any more")
     return j
 
 
@@ -253,11 +257,12 @@ async def shots(request):
     data = await run_in_threadpool(j.shots)
     moved = await run_in_threadpool(jobs.moved_count, j)
     people = await run_in_threadpool(jobs.excluded_people, j)
-    return JSONResponse({"path": str(j.root), "progress": progress, "in_deletes": moved, "excluded_people": len(people), **data})
+    return JSONResponse({"path": str(j.root), "job": j.id, "progress": progress, "in_deletes": moved,
+                         "excluded_people": len(people), **data}, headers={"Cache-Control": "no-store"})
 
 
 async def image(request):
-    j = need_job()
+    j = need_job(request)
     size = request.query_params.get("size", "s")
     key = request.query_params.get("key", "")
     if size not in jobs.THUMB_PX and size != "focus":
@@ -338,7 +343,7 @@ async def person(request):
 
 
 async def face(request):
-    j = need_job()
+    j = need_job(request)
     data = await run_in_threadpool(jobs.face_crop, j, request.query_params.get("key", ""), int(request.query_params.get("i", "-1")))
     return Response(data, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=60"})
 
