@@ -55,6 +55,14 @@ header .spacer { flex: 1; }
 .badge.sharp { pointer-events: auto; cursor: help; }
 #boxes div { position: absolute; border: 2px solid rgba(47,179,111,.9); border-radius: 4px; }
 #boxes div.shut { border-color: var(--reject); }
+#boxes div.bg { border-style: dashed; border-width: 1px; }
+#boxes div { pointer-events: auto; cursor: pointer; }
+#boxes div:hover { border-color: var(--warn); border-width: 3px; }
+.badge.excluded { background: var(--reject); color: #fff; font-weight: 700; }
+.matches { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 8px; max-height: 50vh; overflow: auto; margin: 10px 0; }
+.matches label { display: block; background: var(--panel2); border-radius: 8px; padding: 6px; text-align: center; font-size: 12px; color: var(--muted); cursor: pointer; }
+.matches img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 6px; display: block; margin-bottom: 4px; }
+.matches input { accent-color: var(--reject); }
 .badges { position: absolute; top: 12px; left: 12px; right: 12px; display: flex; flex-wrap: wrap; gap: 6px; pointer-events: none; }
 .badge { background: rgba(0,0,0,.72); border-radius: 6px; padding: 4px 9px; font-size: 13px; }
 .badge.best { background: var(--best); color: #fff; font-weight: 600; }
@@ -193,6 +201,10 @@ header .spacer { flex: 1; }
         <button id="selectsFolderBtn" style="flex:1" title="Show the Selects folder in Finder">Open Selects folder</button>
         <button id="selectsPsBtn" style="flex:1" title="Open the copies in Selects in Photoshop (RAW opens in Camera Raw)">Picks in Photoshop</button>
       </div>
+      <div class="row" style="display:flex;gap:6px">
+        <button id="excludeBtn" style="flex:1" title="Someone asked not to be in any photos: find them and mark their photos X">Exclude a person…</button>
+        <button id="peopleBtn" class="hidden" style="flex:1" title="People excluded from this shoot">Excluded (0)</button>
+      </div>
       <button id="deletesBtn" class="danger" title="Move the photos marked X into a Deletes folder in this shoot. Nothing is deleted.">Move rejects to Deletes…</button>
       <button id="putBackBtn" class="hidden" title="Move everything Photo Cull put in Deletes back where it came from">Put back from Deletes</button>
     </div>
@@ -270,6 +282,8 @@ async function load(first) {
   if (otherShoot) { cur = 0; sel = new Set(); anchorKey = null; first = true; }
   $("folderName").textContent = d.path;
   $("putBackBtn").textContent = "Put back from Deletes (" + d.in_deletes + ")";
+  $("peopleBtn").textContent = "Excluded (" + (d.excluded_people || 0) + ")";
+  $("peopleBtn").classList.toggle("hidden", !d.excluded_people);
   $("putBackBtn").classList.toggle("hidden", !d.in_deletes);
   showProgress(d.progress);
   rebuild(keep);
@@ -366,6 +380,7 @@ function badgesFor(s) {
     b.onmouseenter = () => setFocusOverlay(true, true); b.onmouseleave = () => setFocusOverlay(showFocus, true);
     out.push(b);
   }
+  if (s.excluded) out.push(el("span", "badge excluded", "Excluded person"));
   if (s.suggested) out.push(el("span", "badge best", "★ Suggested: " + (s.reasons.join(", ") || "best of group")));
   for (const p of s.problems || []) out.push(el("span", "badge problem", p));
   if (s.error) out.push(el("span", "badge problem", s.error));
@@ -422,9 +437,11 @@ function renderBoxes() {
     const r = m.getBoundingClientRect(), v = $("viewer").getBoundingClientRect();
     Object.assign(box.style, {left: (r.left - v.left) + "px", top: (r.top - v.top) + "px", width: r.width + "px", height: r.height + "px"});
     box.replaceChildren();
-    for (const [x, y, w, h, shut] of s.face_boxes) {
-      const d = el("div", shut ? "shut" : "");
+    for (const [x, y, w, h, shut, main, i] of s.face_boxes) {
+      const d = el("div", (shut ? "shut" : "") + (main === 0 ? " bg" : ""));
       Object.assign(d.style, {left: 100 * x + "%", top: 100 * y + "%", width: 100 * w + "%", height: 100 * h + "%"});
+      d.title = "Click to exclude this person from the shoot";
+      d.onclick = ev => { ev.stopPropagation(); excludeFlow(s.key, i); };
       box.append(d);
     }
   };
@@ -649,12 +666,73 @@ async function putBack() {
   });
 }
 
+// ---------- excluding a person ----------
+function faceImg(key, i) { const im = el("img"); im.src = "/face?key=" + encodeURIComponent(key) + "&i=" + i; im.alt = ""; return im; }
+function excludeIntro() {
+  if (!showBoxes) toggleFaces();
+  modal(c => {
+    c.append(el("h2", "", "Exclude a person"));
+    c.append(el("p", "", "Find a photo where their face is clear, then click their face (the faces now have boxes around them). Photo Cull finds every photo they're in, shows you the list to check, and marks those photos X with an \"Excluded person\" badge."));
+    const a = el("div", "actions"); const ok = el("button", "primary", "OK"); ok.onclick = closeModal; a.append(ok); c.append(a);
+  });
+}
+async function excludeFlow(key, i) {
+  modal(c => { c.append(el("h2", "", "Looking for this person in the shoot…"), faceImg(key, i), el("p", "", "The first time takes a little while (it also downloads the face-matching model, about 40 MB).")); });
+  let r;
+  try { r = await api("/api/person", {action: "find", key, i}); }
+  catch (e) { modal(c => { c.append(el("h2", "", "Couldn't do that"), el("p", "", e.message)); const a = el("div", "actions"); const ok = el("button", "primary", "OK"); ok.onclick = closeModal; a.append(ok); c.append(a); }); return; }
+  modal(c => {
+    const likely = r.matches.filter(m => m.likely).length;
+    c.append(el("h2", "", "Exclude this person?"));
+    const head = el("div"); head.style.display = "flex"; head.style.gap = "12px"; head.style.alignItems = "center";
+    const pic = faceImg(key, i); pic.style.width = "90px"; pic.style.borderRadius = "8px";
+    head.append(pic, el("p", "", "Found in " + likely + " photo" + (likely === 1 ? "" : "s") + (r.matches.length > likely ? ", plus " + (r.matches.length - likely) + " maybe (not ticked)" : "") + ". Untick any that aren't them; tick any maybes that are."));
+    c.append(head);
+    const grid = el("div", "matches"); const boxes = [];
+    for (const m of r.matches) {
+      const lab = el("label"); const cb = el("input"); cb.type = "checkbox"; cb.checked = m.likely; cb.dataset.key = m.key; boxes.push(cb);
+      const shot = data.shots.find(s => s.key === m.key);
+      lab.append(faceImg(m.key, m.i), cb, " " + (shot ? shot.name : m.key) + (m.likely ? "" : " (maybe)"));
+      grid.append(lab);
+    }
+    c.append(grid);
+    c.append(el("p", "", "Ticked photos are marked X with an \"Excluded person\" badge, so \"Move rejects to Deletes\" sets them aside. Photos added to the shoot later are checked too. You can undo this under \"Excluded\"."));
+    const a = el("div", "actions");
+    const cancel = el("button", "", "Cancel"); cancel.onclick = closeModal;
+    const go = el("button", "danger", "Mark ticked photos X");
+    go.onclick = async () => {
+      const keys = boxes.filter(b => b.checked).map(b => b.dataset.key);
+      if (!keys.length) { closeModal(); return; }
+      go.disabled = true;
+      await api("/api/person", {action: "exclude", key, i, keys});
+      closeModal(); await load(false); render();
+    };
+    a.append(cancel, go); c.append(a);
+  });
+}
+async function showExcluded() {
+  const r = await api("/api/person", {action: "list"});
+  modal(c => {
+    c.append(el("h2", "", "Excluded people"));
+    for (const p of r.people) {
+      const row = el("div"); Object.assign(row.style, {display: "flex", gap: "12px", alignItems: "center", margin: "8px 0"});
+      const pic = faceImg(p.key, p.i); pic.style.width = "64px"; pic.style.borderRadius = "6px";
+      const stop = el("button", "", "Stop excluding");
+      stop.onclick = async () => { await api("/api/person", {action: "stop", id: p.id}); closeModal(); await load(false); render(); };
+      row.append(pic, el("span", "", p.photos + " photo" + (p.photos === 1 ? "" : "s") + " marked X"), stop);
+      c.append(row);
+    }
+    c.append(el("p", "", "Stop excluding takes the X and badge off their photos (unless someone else excluded is in them too)."));
+    const a = el("div", "actions"); const ok = el("button", "primary", "Done"); ok.onclick = closeModal; a.append(ok); c.append(a);
+  });
+}
+
 function help() {
   modal(c => {
     c.append(el("h2", "", "Keyboard"));
     const rows = [["← →", "previous / next photo"], ["↑ ↓", "previous / next group (lands on the suggested best)"], ["P", "pick"], ["X", "reject"], ["U", "undo pick / reject"],
       ["1 – 5", "star rating"], ["0", "clear stars"], ["C", "compare the group side by side (← → choose, P/X mark)"], ["G", "grid of all photos"],
-      ["Z or click", "zoom to 100% (move the mouse to look around)"], ["F", "show faces (red = eyes closed)"], ["S, or hover Sharpness", "show which parts are in focus (green glow)"], ["B", "switch All photos / Best of each group"],
+      ["Z or click", "zoom to 100% (move the mouse to look around)"], ["F", "show faces (red = eyes closed; click a face to exclude that person)"], ["S, or hover Sharpness", "show which parts are in focus (green glow)"], ["B", "switch All photos / Best of each group"],
       ["O", "open in Photoshop: the copy in Selects once it's there (RAW opens in Camera Raw)"], ["R", "show in Finder"],
       ["Click", "select a photo"], ["⌘ / Ctrl-click", "add or remove a photo from the selection"], ["Shift-click", "select everything in between"],
       ["Shift ← →", "extend the selection"], ["⌘ / Ctrl A", "select everything shown"], ["P X U 1–5", "mark every selected photo at once"],
@@ -749,7 +827,8 @@ $("compareBtn").onclick = () => toggleOverlay("compare");
 $("focusBtn").onclick = () => setFocusOverlay(!showFocus); $("facesBtn").onclick = toggleFaces; $("gridBtn").onclick = () => toggleOverlay("grid");
 $("selectsBtn").onclick = selects; $("helpBtn").onclick = help;
 $("selectsFolderBtn").onclick = openSelectsFolder;
-$("deletesBtn").onclick = moveRejects; $("putBackBtn").onclick = putBack;
+$("deletesBtn").onclick = moveRejects;
+$("excludeBtn").onclick = excludeIntro; $("peopleBtn").onclick = showExcluded; $("putBackBtn").onclick = putBack;
 $("selectsPsBtn").onclick = () => openInPhotoshop(sel.size > 1 ? selectedKeys() : pickKeys());
 $("quitBtn").onclick = async () => { if (confirm("Stop Photo Cull? Your marks are saved; open the app again to carry on.")) { await api("/api/quit", {}).catch(() => {}); document.body.replaceChildren(el("div", "empty", "Photo Cull has stopped. You can close this tab.")); } };
 window.addEventListener("resize", () => { renderBoxes(); setFocusOverlay(showFocus); });

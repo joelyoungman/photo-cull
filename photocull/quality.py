@@ -140,7 +140,9 @@ def sface_model(folder):
         return path
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".part")
-    with urllib.request.urlopen(url, timeout=120) as r, open(tmp, "wb") as f:
+    from . import https_context
+
+    with urllib.request.urlopen(url, timeout=120, context=https_context()) as r, open(tmp, "wb") as f:
         while chunk := r.read(1 << 20):
             f.write(chunk)
     if hashlib.sha256(tmp.read_bytes()).hexdigest() != sha:

@@ -107,7 +107,9 @@ def _https_get(url, method="GET"):
     import urllib.request
 
     req = urllib.request.Request(url, method=method, headers={"Accept": "application/vnd.github+json", "User-Agent": "photo-cull"})
-    contexts = [ssl.create_default_context()]
+    from . import https_context
+
+    contexts = [https_context(), ssl.create_default_context()]
     for bundle in ("/etc/ssl/cert.pem", "/private/etc/ssl/cert.pem"):
         if Path(bundle).exists():
             contexts.append(ssl.create_default_context(cafile=bundle))
@@ -250,7 +252,8 @@ async def shots(request):
     progress = dict(j.progress)  # read first: if it says "done", the shots below include every finished photo
     data = await run_in_threadpool(j.shots)
     moved = await run_in_threadpool(jobs.moved_count, j)
-    return JSONResponse({"path": str(j.root), "progress": progress, "in_deletes": moved, **data})
+    people = await run_in_threadpool(jobs.excluded_people, j)
+    return JSONResponse({"path": str(j.root), "progress": progress, "in_deletes": moved, "excluded_people": len(people), **data})
 
 
 async def image(request):

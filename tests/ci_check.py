@@ -82,6 +82,16 @@ def main(shoot, big=None):
     assert "P1000123" in shots and "DSC09009" in shots, "RAW files (RW2/ARW) not read"
     assert shots["P1000123"]["camera"] == "Panasonic DC-GH5" and shots["DSC09009"]["camera"] == "Sony ILCE-7M3"
 
+    # exclude a person: downloads the face-matching model over HTTPS (system certificates) and matches the burst
+    face = shots["DSC00101"]["face_boxes"][0][6]
+    found = call("/api/person", {"action": "find", "key": "cardA/DSC00101", "i": face})["matches"]
+    likely = {m["key"] for m in found if m["likely"]}
+    assert {"cardA/DSC00101", "cardA/DSC00104"} <= likely, found
+    call("/api/person", {"action": "exclude", "key": "cardA/DSC00101", "i": face, "keys": sorted(likely)})
+    people = call("/api/person", {"action": "list"})["people"]
+    assert len(people) == 1 and people[0]["photos"] == len(likely), people
+    call("/api/person", {"action": "stop", "id": people[0]["id"]})
+
     call("/api/mark", {"keys": ["cardA/DSC00104", "cardC/DSC09009"], "flag": "pick", "rating": 4})
     done = call("/api/selects", {"keys": ["cardA/DSC00104", "cardC/DSC09009"]})
     assert sorted(done["copied"]) == ["DSC00104.JPG", "DSC09009.ARW", "DSC09009.JPG"] and not done["failed"], done

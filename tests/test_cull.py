@@ -170,3 +170,27 @@ def test_sharpness_score(job):
     assert all(0 <= x["sharp_score"] <= 100 for x in s.values() if x.get("sharp_score") is not None)
     assert s["DSC00121"]["sharp_score"] < s["DSC00110"]["sharp_score"]  # the blurred scene vs a sharp one
     assert s["DSC00102"]["sharp_score"] < s["DSC00101"]["sharp_score"]  # blurred burst frame vs the sharp one
+
+
+def test_exclude_a_person(job):
+    """Click a face, find the same person across the burst, mark those X, undo."""
+    from photocull import job as jobs
+
+    s = by_name(job)
+    face = s["DSC00101"]["face_boxes"][0][6]
+    matches = {m["key"]: m for m in jobs.find_person(job, "cardA/DSC00101", face)}
+    assert {"cardA/DSC00101", "cardA/DSC00104"} <= {k for k, m in matches.items() if m["likely"]}
+    assert not any(k.startswith("cardA/DSC0011") for k in matches)  # the scenes have no faces
+
+    keys = [k for k, m in matches.items() if m["likely"]]
+    assert by_name(job)["DSC00104"]["flag"] == "pick"  # picked earlier in these tests
+    jobs.exclude_person(job, "cardA/DSC00101", face, keys)
+    s = by_name(job)
+    assert s["DSC00104"]["excluded"] and s["DSC00104"]["flag"] == "reject"
+    people = jobs.excluded_people(job)
+    assert len(people) == 1 and people[0]["photos"] == len(keys)
+    assert jobs.face_crop(job, "cardA/DSC00101", face)[:2] == b"\xff\xd8"  # a JPEG
+
+    jobs.stop_excluding(job, people[0]["id"])
+    s = by_name(job)
+    assert not s["DSC00104"]["excluded"] and s["DSC00104"]["flag"] == "pick"  # back to the pick it had before

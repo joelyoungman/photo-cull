@@ -83,6 +83,16 @@ photos** at the top.
 Previews of shoots you haven't opened for 60 days are cleared to save disk space. Your marks stay, and the previews
 are remade if you open the shoot again.
 
+### Excluding a person
+
+If someone asks not to be in any photos: click **Exclude a person…** (or turn on **Faces**), then click their face in a
+photo where it's clear. Photo Cull finds every photo they're in, including in the background, and shows them as a list
+of face crops to check. Untick any that aren't them, tick any "maybe" that are, then **Mark ticked photos X**. Those
+photos get an **Excluded person** badge, so **Move rejects to Deletes** sets them aside. Photos added to the shoot
+later are checked too. **Excluded (n)** lists the people excluded from the shoot; **Stop excluding** puts each photo
+back to the mark it had before. Faces are only compared within the shoot, on this Mac; nobody is identified by name.
+The face-matching model (39 MB) downloads the first time you use this.
+
 ### What the suggestions mean
 
 - **Sharpness 0–100**: how sharp a photo is compared with the rest of this shoot (90 = sharper than 90% of it).

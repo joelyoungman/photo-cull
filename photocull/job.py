@@ -133,7 +133,7 @@ CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS moves (dst TEXT PRIMARY KEY, src TEXT, key TEXT, at REAL);
 CREATE TABLE IF NOT EXISTS face_vecs (key TEXT, i INTEGER, sig TEXT, vec BLOB, PRIMARY KEY (key, i));
 CREATE TABLE IF NOT EXISTS people_out (id INTEGER PRIMARY KEY, key TEXT, i INTEGER, vec BLOB, created REAL);
-CREATE TABLE IF NOT EXISTS excluded (key TEXT, person INTEGER, sim REAL, PRIMARY KEY (key, person));
+CREATE TABLE IF NOT EXISTS excluded (key TEXT, person INTEGER, sim REAL, prev TEXT, PRIMARY KEY (key, person));
 """
 
 
@@ -151,6 +151,8 @@ class Job:
         self.db = sqlite3.connect(self.dir / "cull.db", check_same_thread=False, isolation_level=None)
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript(SCHEMA)
+        if "prev" not in [c[1] for c in self.db.execute("PRAGMA table_info(excluded)")]:
+            self.db.execute("ALTER TABLE excluded ADD COLUMN prev TEXT")  # the mark a photo had before it was excluded
         v = self.db.execute("SELECT value FROM meta WHERE key='analysis_v'").fetchone()
         if not v or int(v[0]) != ANALYSIS_V:
             self.db.execute("UPDATE shots SET sig = NULL")
@@ -568,12 +570,14 @@ def exclude_person(job, key, i, keys):
     vec = _face_vecs(job, {key}).get((key, i))
     if vec is None:
         raise ValueError("that face is too small or unclear to recognise")
+    marks = job._marks()
     with job.lock:
         cur = job.db.execute("INSERT INTO people_out (key, i, vec, created) VALUES (?, ?, ?, ?)",
                              (key, i, vec.astype(np.float32).tobytes(), time.time()))
         person = cur.lastrowid
         for k in keys:
-            job.db.execute("INSERT OR REPLACE INTO excluded VALUES (?, ?, ?)", (k, person, None))
+            job.db.execute("INSERT OR REPLACE INTO excluded (key, person, sim, prev) VALUES (?, ?, ?, ?)",
+                           (k, person, None, marks.get(k, (0, ""))[1]))
     job.mark(keys, flag="reject")
     return {"person": person, "marked": len(keys)}
 
@@ -599,9 +603,11 @@ def check_excluded(job):
                 hits.append((k, person, float(pv @ v)))
                 done.add((k, person))
     if hits:
+        marks = job._marks()
         with job.lock:
             for k, person, sim in hits:
-                job.db.execute("INSERT OR REPLACE INTO excluded VALUES (?, ?, ?)", (k, person, sim))
+                job.db.execute("INSERT OR REPLACE INTO excluded (key, person, sim, prev) VALUES (?, ?, ?, ?)",
+                               (k, person, sim, marks.get(k, (0, ""))[1]))
         job.mark(sorted({k for k, _, _ in hits}), flag="reject")
 
 
@@ -613,16 +619,20 @@ def excluded_people(job):
 
 
 def stop_excluding(job, person):
-    """Forget an excluded person. Their photos lose the badge, and lose the X unless another excluded person is in them."""
+    """Forget an excluded person. Their photos lose the badge and go back to the mark they had before (an X she set
+    herself stays), unless another excluded person is in them too."""
     with job.lock:
-        keys = [k for (k,) in job.db.execute("SELECT key FROM excluded WHERE person = ?", (person,))]
+        rows = job.db.execute("SELECT key, prev FROM excluded WHERE person = ?", (person,)).fetchall()
         job.db.execute("DELETE FROM excluded WHERE person = ?", (person,))
         job.db.execute("DELETE FROM people_out WHERE id = ?", (person,))
         still = {k for (k,) in job.db.execute("SELECT DISTINCT key FROM excluded")}
-    unmark = [k for k in keys if k not in still]
     marks = job._marks()
-    job.mark([k for k in unmark if marks.get(k, (0, ""))[1] == "reject"], flag="")
-    return {"unmarked": len(unmark)}
+    restored = 0
+    for key, prev in rows:
+        if key not in still and marks.get(key, (0, ""))[1] == "reject" and (prev or "") != "reject":
+            job.mark([key], flag=prev or "")
+            restored += 1
+    return {"unmarked": restored}
 
 
 def face_crop(job, key, i):
