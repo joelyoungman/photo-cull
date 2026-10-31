@@ -77,6 +77,8 @@ To remove Photo Cull, delete it from Applications and delete the folder
    there in Photoshop (Camera Raw for RAWs).
 
 Reopening a shoot is instant: only new or changed photos are analysed, and your picks and stars are remembered.
+Added more photos to the folder? Photo Cull looks for them when you come back to its page, or click **Check for new
+photos** at the top.
 Previews of shoots you haven't opened for 60 days are cleared to save disk space. Your marks stay, and the previews
 are remade if you open the shoot again.
 

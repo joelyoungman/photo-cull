@@ -115,6 +115,7 @@ header .spacer { flex: 1; }
   <span class="title">Photo Cull</span>
   <span class="folder" id="folderName"></span>
   <button id="chooseBtn">Choose shoot…</button>
+  <button id="rescanBtn" class="hidden" title="Look in the shoot folder for photos added since (also happens by itself when you come back to this page)">Check for new photos</button>
   <span class="spacer"></span>
   <span id="progress"></span>
   <span id="counts"></span>
@@ -237,7 +238,7 @@ async function openPath(path) {
   catch (e) { alert("Couldn't open that folder: " + e.message); }
 }
 async function opened() {
-  $("start").classList.add("hidden"); $("work").classList.remove("hidden");
+  $("start").classList.add("hidden"); $("work").classList.remove("hidden"); $("rescanBtn").classList.remove("hidden");
   cur = 0; data = {shots: []};
   await load(true);
 }
@@ -703,6 +704,19 @@ $("deletesBtn").onclick = moveRejects; $("putBackBtn").onclick = putBack;
 $("selectsPsBtn").onclick = () => openInPhotoshop(sel.size > 1 ? selectedKeys() : pickKeys());
 $("quitBtn").onclick = async () => { if (confirm("Stop Photo Cull? Your marks are saved; open the app again to carry on.")) { await api("/api/quit", {}).catch(() => {}); document.body.replaceChildren(el("div", "empty", "Photo Cull has stopped. You can close this tab.")); } };
 window.addEventListener("resize", renderBoxes);
+
+// Photos added to the shoot folder later: look for them when she comes back to this page (at most every 30 s),
+// or when she clicks "Check for new photos". Only new or changed photos are analysed; marks stay.
+let lastScan = Date.now();
+async function rescan() {
+  lastScan = Date.now();
+  try { await api("/api/reanalyse", {}); await load(false); } catch (e) {}
+}
+$("rescanBtn").onclick = rescan;
+window.addEventListener("focus", () => {
+  const p = lastProgress;
+  if (!$("work").classList.contains("hidden") && Date.now() - lastScan > 30000 && !(p && (p.phase === "analysing" || p.phase === "scanning"))) rescan();
+});
 
 // While analysis runs, refresh every couple of seconds so photos appear as they're done.
 setInterval(async () => {

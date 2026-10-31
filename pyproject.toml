@@ -1,6 +1,6 @@
 [project]
 name = "photo-cull"
-version = "0.1.5"
+version = "0.1.6"
 description = "Pick the best photos from one shoot, quickly. Local, no cloud."
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
