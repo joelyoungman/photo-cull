@@ -84,6 +84,11 @@ are remade if you open the shoot again.
 
 ### What the suggestions mean
 
+- **Sharpness 0–100**: how sharp a photo is compared with the rest of this shoot (90 = sharper than 90% of it).
+  Photos of people are judged on their faces. It's shown on the photo (green / amber / red) and on each thumbnail, and
+  **Order: sharpest first** lists the shoot from sharpest to softest. It's a guide, not a verdict: a soft photo can
+  still be the keeper.
+
 - **Groups**: photos from the same camera taken within 1.5 s of each other (a burst, including the GH5's
   6K/4K Photo bursts), or within 45 s that look alike. Two bodies of the same model are kept apart by their card
   folders.

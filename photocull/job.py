@@ -305,6 +305,9 @@ class Job:
             for r, score, reasons in scored:
                 out.append(_public(r, gid, len(members), score, r is best, reasons if r is best else [],
                                    _problems(r, sharp_median), marks.get(r["key"], (0, ""))))
+        scores = _sharp_scores(ok)
+        for s in out:
+            s["sharp_score"] = scores.get(s["key"])
         for r in rows:
             if r["error"] or not r["sig"]:
                 out.append({"key": r["key"], "name": Path(r["key"]).name, "files": json.loads(r["files"]), "error": r["error"] or "not analysed yet",
@@ -561,6 +564,27 @@ def _score(members):
             reasons.append("well exposed")
         out.append((r, round(score, 1), reasons))
     return out
+
+
+def _sharp_scores(shots):
+    """{key: 0-100} sharpness compared with the rest of this shoot: 90 = sharper than 90% of it. Photos of people
+    are scored on their faces against the other photos of people (focus on the face is what matters there); the
+    rest on their sharpest part against the whole shoot. Raw sharpness numbers mean little on their own."""
+    def percentiles(values):
+        ordered = sorted(values.values())
+        n = len(ordered)
+        if n < 2:
+            return {k: 100 for k in values}
+        return {k: round(100 * float(np.searchsorted(ordered, v, side="left")) / (n - 1)) for k, v in values.items()}
+
+    frame = percentiles({r["key"]: r["sharpness"] for r in shots})
+    faces = {}
+    for r in shots:
+        fs = [f["sharp"] for f in _main_faces(r) if f["sharp"] is not None]
+        if fs:
+            faces[r["key"]] = max(fs)
+    by_face = percentiles(faces) if len(faces) >= 3 else {}
+    return {k: by_face.get(k, v) for k, v in frame.items()}
 
 
 def _problems(r, sharp_median):

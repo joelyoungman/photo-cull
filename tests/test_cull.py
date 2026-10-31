@@ -163,3 +163,10 @@ def test_rejects_to_deletes_and_back(job):
     assert sorted(back["restored"]) == ["DSC00112.ARW", "DSC00112.JPG", "DSC00112.xmp"]
     assert (card / "DSC00112.xmp").read_text("utf-8") == "edits"
     assert key in {s["key"] for s in job.shots()["shots"]} and jobs.moved_count(job) == 0
+
+
+def test_sharpness_score(job):
+    s = by_name(job)
+    assert all(0 <= x["sharp_score"] <= 100 for x in s.values() if x.get("sharp_score") is not None)
+    assert s["DSC00121"]["sharp_score"] < s["DSC00110"]["sharp_score"]  # the blurred scene vs a sharp one
+    assert s["DSC00102"]["sharp_score"] < s["DSC00101"]["sharp_score"]  # blurred burst frame vs the sharp one

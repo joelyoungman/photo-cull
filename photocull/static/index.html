@@ -77,6 +77,8 @@ header .spacer { flex: 1; }
 .thumb .flag.reject { background: var(--reject); }
 .thumb.rejected img { opacity: .35; }
 .thumb .warn { position: absolute; top: 3px; right: 3px; background: rgba(120,25,22,.9); color: #ffd2cf; font-size: 10px; padding: 1px 5px; border-radius: 4px; }
+.thumb .sharpnum { position: absolute; bottom: 3px; right: 3px; color: #fff; font-size: 10px; background: rgba(0,0,0,.6); padding: 0 4px; border-radius: 4px; }
+.thumb .flag ~ .sharpnum { right: 52px; }
 .thumb .stars { position: absolute; bottom: 3px; left: 3px; color: var(--star); font-size: 10px; background: rgba(0,0,0,.6); padding: 0 4px; border-radius: 4px; }
 
 #side { border-left: 1px solid var(--line); background: var(--panel); display: grid; grid-template-rows: auto 1fr auto; min-height: 0; }
@@ -153,6 +155,10 @@ header .spacer { flex: 1; }
         <button id="modeAll" class="on" title="Every photo">All photos</button>
         <button id="modeBest" title="Only the suggested best of each group, plus photos on their own">Best of each</button>
       </div>
+      <select id="order" title="Order">
+        <option value="time">Order: as taken (groups together)</option>
+        <option value="sharp">Order: sharpest first</option>
+      </select>
       <select id="filter" title="Show only…">
         <option value="all">Show: everything</option>
         <option value="unmarked">Not decided yet</option>
@@ -284,6 +290,7 @@ function matches(s, f) {
 function rebuild(keepKey) {
   const f = $("filter").value;
   view = data.shots.filter(s => (mode === "all" || s.suggested || s.group_size === 1 || s.group == null) && matches(s, f));
+  if ($("order").value === "sharp") view = [...view].sort((a, b) => (b.sharp_score ?? -1) - (a.sharp_score ?? -1));
   const i = keepKey ? view.findIndex(s => s.key === keepKey) : -1;
   cur = i >= 0 ? i : Math.min(cur, Math.max(0, view.length - 1));
   renderList(); renderCounts();
@@ -307,6 +314,7 @@ function thumbEl(s, isCur) {
   else t.append(el("div", "warn", "can't read"));
   if (s.flag) t.append(el("span", "flag " + s.flag, s.flag === "pick" ? "PICK" : "REJECT"));
   if (s.rating) t.append(el("span", "stars", stars(s.rating)));
+  if (s.sharp_score != null) t.append(el("span", "sharpnum", String(s.sharp_score)));
   if ((s.problems || []).length && !s.suggested) t.append(el("span", "warn", "!"));
   t.title = s.name + ((s.problems || []).length ? " — " + s.problems.join(", ") : "");
   return t;
@@ -337,6 +345,12 @@ function badgesFor(s) {
   if (s.flag === "pick") out.push(el("span", "badge pick", "PICK"));
   if (s.flag === "reject") out.push(el("span", "badge reject", "REJECT"));
   if (s.rating) out.push(el("span", "badge stars", stars(s.rating)));
+  if (s.sharp_score != null) {
+    const b = el("span", "badge sharp", "Sharpness " + s.sharp_score);
+    b.style.borderLeft = "4px solid " + (s.sharp_score >= 67 ? "var(--best)" : s.sharp_score >= 34 ? "var(--warn)" : "var(--reject)");
+    b.title = "Sharper than " + s.sharp_score + "% of this shoot" + (s.main_faces ? ", judged on the faces" : "");
+    out.push(b);
+  }
   if (s.suggested) out.push(el("span", "badge best", "★ Suggested: " + (s.reasons.join(", ") || "best of group")));
   for (const p of s.problems || []) out.push(el("span", "badge problem", p));
   if (s.error) out.push(el("span", "badge problem", s.error));
@@ -369,6 +383,7 @@ function renderInfo() {
   if (s.taken) add("Taken:", s.taken.replace("T", " ").slice(0, 22));
   add("Camera:", s.camera);
   if (s.exposure || s.fnumber) add("", [s.exposure && s.exposure + "s", s.fnumber && "f/" + s.fnumber, s.iso && "ISO " + s.iso, s.focal && s.focal + "mm"].filter(Boolean).join("  "));
+  if (s.sharp_score != null) add("Sharpness:", s.sharp_score + "/100" + (s.main_faces ? " (faces)" : ""));
   if (s.main_faces) add("Faces:", s.main_faces + " · eyes open " + s.eyes_open + " · smiling " + s.smiling);
   if (s.group_size > 1) add("Group:", (groupOf(s).indexOf(s) + 1) + " of " + s.group_size);
   add("", (cur + 1) + " / " + view.length);
@@ -700,6 +715,7 @@ $("typedGo").onclick = () => { const p = $("typedPath").value.trim(); if (p) ope
 $("typedPath").addEventListener("keydown", e => { if (e.key === "Enter") $("typedGo").click(); });
 $("modeAll").onclick = () => setMode("all"); $("modeBest").onclick = () => setMode("best");
 $("filter").onchange = () => { rebuild(view[cur] && view[cur].key); render(); };
+$("order").onchange = () => { rebuild(view[cur] && view[cur].key); render(); };
 $("compareBtn").onclick = () => toggleOverlay("compare"); $("gridBtn").onclick = () => toggleOverlay("grid");
 $("selectsBtn").onclick = selects; $("helpBtn").onclick = help;
 $("selectsFolderBtn").onclick = openSelectsFolder;
