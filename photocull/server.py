@@ -68,21 +68,22 @@ def choose_folder():
     return None
 
 
-def open_with(path, app=None):
-    """Open a file in Photoshop (or the default app), or show it in Finder/Explorer."""
-    path = str(path)
+def open_with(paths, app=None):
+    """Open files in Photoshop (or the default app), show one in Finder/Explorer, or open a folder."""
+    paths = [str(p) for p in (paths if isinstance(paths, (list, tuple)) else [paths])]
     if sys.platform == "darwin":
         if app == "reveal":
-            return subprocess.run(["open", "-R", path]).returncode == 0
+            return subprocess.run(["open", "-R", paths[0]]).returncode == 0
         if app == "photoshop":
-            if subprocess.run(["open", "-b", "com.adobe.Photoshop", path]).returncode == 0:
+            if subprocess.run(["open", "-b", "com.adobe.Photoshop", *paths]).returncode == 0:
                 return True
-        return subprocess.run(["open", path]).returncode == 0
+        return subprocess.run(["open", *paths]).returncode == 0
     if sys.platform == "win32":
         if app == "reveal":
-            subprocess.run(["explorer", "/select,", path])
+            subprocess.run(["explorer", "/select,", paths[0]])
             return True
-        os.startfile(path)  # Windows: RAW/JPEG open in whatever app is set for them
+        for p in paths:
+            os.startfile(p)  # Windows: RAW/JPEG open in whatever app is set for them
         return True
     return False
 
@@ -187,6 +188,8 @@ async def update(request):
         await run_in_threadpool(start_update)
         return JSONResponse({"ok": True})
     current = version()
+    if request.query_params.get("force"):
+        state["checked"] = 0
     latest = await run_in_threadpool(latest_version) if sys.platform == "darwin" else None
     return JSONResponse({"current": current, "latest": latest,
                          "available": bool(latest and _v(latest) > _v(current))})
@@ -255,7 +258,7 @@ async def selects(request):
     if body.get("dry_run"):
         plan = await run_in_threadpool(j.selects_plan, keys)
         return JSONResponse({"folder": str(j.root / jobs.SELECTS),
-                             "files": [{"from": f, "to": t.name, "exists": t.exists()} for _, f, t in plan]})
+                             "files": [{"from": f, "to": t.name, "exists": t.exists(), "kind": k} for _, f, t, k in plan]})
     result = await run_in_threadpool(j.copy_selects, keys, bool(body.get("write_ratings", True)))
     return JSONResponse(result)
 
@@ -268,8 +271,28 @@ async def open_file(request):
     files = shot["files"]
     raw = next((f for f in files if Path(f).suffix.lower() in jobs.photos.RAW_EXTS), None)
     target = j.root / (raw or files[0])  # Photoshop: the RAW opens in Camera Raw
+    copy = (await run_in_threadpool(j.selects_copies, [key])).get(key)
+    if copy is not None:  # edit the copy in Selects, so the originals' folder stays untouched
+        target = copy
     ok = await run_in_threadpool(open_with, target, body.get("app"))
-    return JSONResponse({"ok": ok, "file": target.name})
+    return JSONResponse({"ok": ok, "file": target.name, "in_selects": copy is not None})
+
+
+async def open_selects(request):
+    """what = "folder": show the Selects folder. Otherwise open these shots' Selects copies in Photoshop."""
+    j = need_job()
+    body = await request.json()
+    folder = j.root / jobs.SELECTS
+    if not folder.is_dir():
+        raise ValueError("there's no Selects folder yet: copy some picks first")
+    if body.get("what") == "folder":
+        ok = await run_in_threadpool(open_with, folder)
+        return JSONResponse({"ok": ok})
+    copies = list((await run_in_threadpool(j.selects_copies, known_keys(j, body["keys"]))).values())
+    if not copies:
+        raise ValueError("none of these are in Selects yet")
+    ok = await run_in_threadpool(open_with, copies, "photoshop")
+    return JSONResponse({"ok": ok, "count": len(copies)})
 
 
 async def reanalyse(request):
@@ -296,6 +319,7 @@ app = Starlette(routes=[
     Route("/api/mark", endpoint(mark), methods=["POST"]),
     Route("/api/selects", endpoint(selects), methods=["POST"]),
     Route("/api/openfile", endpoint(open_file), methods=["POST"]),
+    Route("/api/openselects", endpoint(open_selects), methods=["POST"]),
     Route("/api/reanalyse", endpoint(reanalyse), methods=["POST"]),
     Route("/api/quit", endpoint(quit_app), methods=["POST"]),
     Route("/api/update", endpoint(update), methods=["GET", "POST"]),

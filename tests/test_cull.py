@@ -111,3 +111,31 @@ def test_two_cameras_at_once_keep_their_bursts():
     b = [shot("B", t, i) for i, t in enumerate((0.2, 0.7, 1.2))]
     groups = _group(sorted(a + b, key=lambda r: r["t"]))
     assert sorted(len(g) for g in groups) == [3, 3]
+
+
+def test_photoshop_sidecar_goes_to_selects(job):
+    """A RAW's .xmp (Camera Raw / Photoshop edits) is copied with it, refreshed when the original is edited again,
+    and never overwrites edits made later to the Selects copy."""
+    import os
+    import time
+
+    card = job.root / "cardA"
+    (card / "DSC00111.ARW").write_bytes(b"raw")
+    (card / "DSC00111.xmp").write_text("edit 1", "utf-8")
+    job.analyse()
+    key = "cardA/DSC00111"
+    job.copy_selects([key])
+    side = job.root / "Selects" / "DSC00111.xmp"
+    assert side.read_text("utf-8") == "edit 1"
+    assert job.selects_copies([key])[key].name == "DSC00111.ARW"
+
+    (card / "DSC00111.xmp").write_text("edit 2", "utf-8")
+    later = time.time() + 5
+    os.utime(card / "DSC00111.xmp", (later, later))
+    job.copy_selects([key])
+    assert side.read_text("utf-8") == "edit 2"
+
+    side.write_text("edited in Selects", "utf-8")
+    os.utime(side, (later + 5, later + 5))
+    job.copy_selects([key])
+    assert side.read_text("utf-8") == "edited in Selects"

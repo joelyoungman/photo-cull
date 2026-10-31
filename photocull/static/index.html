@@ -66,6 +66,10 @@ header .spacer { flex: 1; }
 .thumb { position: relative; flex: none; width: 128px; height: 86px; border-radius: 6px; overflow: hidden; border: 2px solid transparent; background: #000; cursor: pointer; }
 .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .thumb.cur { border-color: var(--accent); }
+.thumb.multi { box-shadow: inset 0 0 0 3px var(--warn); }
+#versionBtn { background: none; border: none; color: var(--muted); font-size: 12px; padding: 4px 6px; }
+#versionBtn:hover { color: var(--text); }
+#counts .selcount { color: var(--warn); font-weight: 600; }
 .thumb.best::after { content: "★ best"; position: absolute; top: 3px; left: 3px; background: var(--best); color: #fff; font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 4px; }
 .thumb .flag { position: absolute; bottom: 3px; right: 3px; font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 4px; color: #fff; }
 .thumb .flag.pick { background: var(--pick); }
@@ -113,6 +117,7 @@ header .spacer { flex: 1; }
   <span class="spacer"></span>
   <span id="progress"></span>
   <span id="counts"></span>
+  <button id="versionBtn" title="Check for updates"></button>
   <button id="updateBtn" class="primary hidden" title="A newer Photo Cull is available">Update</button>
   <button id="helpBtn" title="Keyboard shortcuts (?)">?</button>
   <button id="quitBtn" title="Stop Photo Cull">Quit</button>
@@ -165,6 +170,10 @@ header .spacer { flex: 1; }
     <div class="bottom">
       <label style="color:var(--muted);font-size:13px"><input type="checkbox" id="advance" checked> Move to next photo after P / X</label>
       <button class="primary" id="selectsBtn">Copy picks to Selects…</button>
+      <div class="row" style="display:flex;gap:6px">
+        <button id="selectsFolderBtn" style="flex:1" title="Show the Selects folder in Finder">Open Selects folder</button>
+        <button id="selectsPsBtn" style="flex:1" title="Open the copies in Selects in Photoshop (RAW opens in Camera Raw)">Picks in Photoshop</button>
+      </div>
     </div>
   </aside>
 </section>
@@ -183,6 +192,8 @@ let overlay = null;     // null | compare | grid
 let compareSel = 0;
 let zoom = false, showBoxes = false;
 let lastProgress = null;
+let sel = new Set();     // keys selected with the mouse (click, Cmd/Ctrl-click, Shift-click) or Shift+arrows
+let anchorKey = null;    // where a Shift-click range starts
 
 async function api(path, body) {
   const r = await fetch(path, body === undefined ? {} : {method: "POST", headers: H, body: JSON.stringify(body)});
@@ -280,11 +291,12 @@ function renderCounts() {
   const c = $("counts"); c.replaceChildren();
   const b = t => el("b", "", String(t));
   c.append(b(data.shots.length), " photos · ", b(groups), " groups · ", b(picks), " picks · ", b(rejects), " rejects");
+  if (sel.size > 1) c.append(" · ", el("span", "selcount", sel.size + " selected"));
 }
 
 // ---------- rendering ----------
 function thumbEl(s, isCur) {
-  const t = el("div", "thumb" + (isCur ? " cur" : "") + (s.suggested ? " best" : "") + (s.flag === "reject" ? " rejected" : ""));
+  const t = el("div", "thumb" + (isCur ? " cur" : "") + (s.suggested ? " best" : "") + (s.flag === "reject" ? " rejected" : "") + (sel.size > 1 && sel.has(s.key) ? " multi" : ""));
   if (!s.error) { const i = el("img"); i.loading = "lazy"; i.src = img(s.key, "s"); i.alt = s.name; t.append(i); }
   else t.append(el("div", "warn", "can't read"));
   if (s.flag) t.append(el("span", "flag " + s.flag, s.flag === "pick" ? "PICK" : "REJECT"));
@@ -304,7 +316,7 @@ function renderList() {
       list.append(box); lastGroup = s.group;
     }
     const t = thumbEl(s, i === cur); t.dataset.i = i;
-    t.onclick = () => go(i);
+    t.onclick = e => clickThumb(i, e);
     box.append(t);
   });
   const c = list.querySelector(".thumb.cur"); if (c) c.scrollIntoView({block: "nearest"});
@@ -362,7 +374,7 @@ function renderStrip() {
   strip.append(el("span", "label", g.length > 1 ? "This group" : "On its own"));
   for (const m of g) {
     const t = thumbEl(m, m.key === s.key);
-    t.onclick = () => { const i = view.findIndex(v => v.key === m.key); if (i >= 0) go(i); else { mode = "all"; $("filter").value = "all"; setMode("all", m.key); } };
+    t.onclick = e => { const i = view.findIndex(v => v.key === m.key); if (i >= 0) clickThumb(i, e); else { mode = "all"; $("filter").value = "all"; setMode("all", m.key); } };
     strip.append(t);
   }
 }
@@ -398,7 +410,11 @@ function renderCompare() {
 }
 function renderGrid() {
   const g = $("grid"); g.replaceChildren();
-  view.forEach((s, i) => { const t = thumbEl(s, i === cur); t.onclick = () => { cur = i; toggleOverlay(null); render(); }; g.append(t); });
+  view.forEach((s, i) => {
+    const t = thumbEl(s, i === cur);
+    t.onclick = e => { if (e.shiftKey || e.metaKey || e.ctrlKey) { clickThumb(i, e); renderGrid(); } else { cur = i; sel = new Set([s.key]); anchorKey = s.key; toggleOverlay(null); render(); } };
+    g.append(t);
+  });
   const c = g.querySelector(".thumb.cur"); if (c) c.scrollIntoView({block: "center"});
 }
 function toggleOverlay(which) {
@@ -434,7 +450,27 @@ function setZoom(on, ev) {
 $("viewer").addEventListener("click", e => { if (e.target === $("mainImg")) setZoom(!zoom, e); });
 
 // ---------- actions ----------
-function go(i) { if (!view.length) return; cur = Math.max(0, Math.min(view.length - 1, i)); render(); }
+function go(i, extend) {
+  if (!view.length) return;
+  cur = Math.max(0, Math.min(view.length - 1, i));
+  if (extend) { if (!sel.size && anchorKey) sel.add(anchorKey); sel.add(view[cur].key); }
+  else { sel = new Set([view[cur].key]); anchorKey = view[cur].key; }
+  render(); renderCounts();
+}
+function clickThumb(i, e) {
+  const k = view[i].key;
+  const a = anchorKey ? view.findIndex(v => v.key === anchorKey) : -1;
+  if (e && e.shiftKey && a >= 0) {  // a range, added to the selection when Cmd/Ctrl is held too
+    if (!(e.metaKey || e.ctrlKey)) sel = new Set();
+    for (let j = Math.min(a, i); j <= Math.max(a, i); j++) sel.add(view[j].key);
+  } else if (e && (e.metaKey || e.ctrlKey)) {  // add or remove one
+    if (!sel.size && view[cur]) sel.add(view[cur].key);
+    if (sel.has(k) && sel.size > 1) sel.delete(k); else sel.add(k);
+    anchorKey = k;
+  } else { sel = new Set([k]); anchorKey = k; }
+  cur = i; render(); renderCounts();
+}
+function selectedKeys() { return sel.size > 1 ? view.filter(v => sel.has(v.key)).map(v => v.key) : (view[cur] ? [view[cur].key] : []); }
 function goGroup(dir) {
   const s = view[cur]; if (!s) return;
   let i = cur;
@@ -447,20 +483,30 @@ function goGroup(dir) {
   go(i);
 }
 async function mark(fields) {
-  const targets = overlay === "compare" ? [groupOf(view[cur])[compareSel]] : [view[cur]];
-  const s = targets[0]; if (!s) return;
-  await api("/api/mark", {keys: [s.key], ...fields});
-  for (const t of data.shots) if (t.key === s.key) Object.assign(t, fields);
-  const advance = $("advance").checked && "flag" in fields && fields.flag && overlay !== "compare";
-  const keep = s.key;
+  const keys = overlay === "compare" ? [groupOf(view[cur])[compareSel]].filter(Boolean).map(s => s.key) : selectedKeys();
+  if (!keys.length) return;
+  await api("/api/mark", {keys, ...fields});
+  for (const t of data.shots) if (keys.includes(t.key)) Object.assign(t, fields);
+  const advance = keys.length === 1 && $("advance").checked && "flag" in fields && fields.flag && overlay !== "compare";
+  const keep = view[cur] ? view[cur].key : keys[0];
   rebuild(keep);
   if (advance) { const i = view.findIndex(v => v.key === keep); go((i >= 0 ? i : cur - 1) + 1); }
   else { render(); }
 }
 async function openFile(app) {
   const s = view[cur]; if (!s) return;
+  if (app === "photoshop" && sel.size > 1) { await openInPhotoshop(selectedKeys()); return; }
   try { await api("/api/openfile", {key: s.key, app}); } catch (e) { alert(e.message); }
 }
+async function openSelectsFolder() {
+  try { await api("/api/openselects", {what: "folder"}); } catch (e) { alert(e.message); }
+}
+async function openInPhotoshop(keys) {
+  if (!keys.length) { alert("Pick some photos first (P), then copy them to Selects."); return; }
+  try { await api("/api/openselects", {keys}); }
+  catch (e) { alert(e.message === "none of these are in Selects yet" ? "Copy them to Selects first (Copy picks to Selects…), then open them from there." : e.message); }
+}
+function pickKeys() { return data.shots.filter(s => s.flag === "pick").map(s => s.key); }
 
 function modal(build) {
   const card = $("modalCard"); card.replaceChildren(); build(card);
@@ -478,7 +524,7 @@ async function selects() {
     const p = el("p"); p.append("Copies ", el("b", "", String(plan.files.length)), " files (RAW and JPEG together) into:"); c.append(p);
     c.append(el("p", "", plan.folder));
     const ul = el("ul"); for (const f of plan.files) ul.append(el("li", "", f.from + (f.exists ? " (already there, skipped)" : "") + (f.to !== f.from.split("/").pop() ? " → " + f.to : ""))); c.append(ul);
-    c.append(el("p", "", "Your originals stay exactly where they are. Nothing is moved or deleted. RAW copies get a small .xmp file with the star rating, which Bridge, Camera Raw and Lightroom show."));
+    c.append(el("p", "", "Your originals stay exactly where they are. Nothing is moved or deleted. A RAW's .xmp file (your Camera Raw / Photoshop edits) comes too; RAWs without one get a small .xmp with the star rating, which Bridge, Camera Raw and Lightroom show."));
     const a = el("div", "actions");
     const cancel = el("button", "", "Cancel"); cancel.onclick = closeModal;
     const go = el("button", "primary", "Copy " + plan.files.length + " files");
@@ -490,7 +536,11 @@ async function selects() {
         c.append(el("p", "", "Copied " + r.copied.length + " files" + (r.skipped.length ? ", " + r.skipped.length + " were already there" : "") + "."));
         if (r.failed.length) { c.append(el("p", "", "These didn't copy:")); const u = el("ul"); r.failed.forEach(f => u.append(el("li", "", f))); c.append(u); }
         c.append(el("p", "", r.folder));
-        const aa = el("div", "actions"); const ok = el("button", "primary", "OK"); ok.onclick = closeModal; aa.append(ok); c.append(aa);
+        const aa = el("div", "actions");
+        const folder = el("button", "", "Open Selects folder"); folder.onclick = () => { openSelectsFolder(); closeModal(); };
+        const ps = el("button", "", "Open in Photoshop"); ps.onclick = () => { openInPhotoshop(picks.map(s => s.key)); closeModal(); };
+        const ok = el("button", "primary", "Done"); ok.onclick = closeModal;
+        aa.append(folder, ps, ok); c.append(aa);
       } catch (e) { go.textContent = "Failed: " + e.message; }
     };
     a.append(cancel, go); c.append(a);
@@ -502,7 +552,10 @@ function help() {
     const rows = [["← →", "previous / next photo"], ["↑ ↓", "previous / next group (lands on the suggested best)"], ["P", "pick"], ["X", "reject"], ["U", "undo pick / reject"],
       ["1 – 5", "star rating"], ["0", "clear stars"], ["C", "compare the group side by side (← → choose, P/X mark)"], ["G", "grid of all photos"],
       ["Z or click", "zoom to 100% (move the mouse to look around)"], ["F", "show faces (red = eyes closed)"], ["B", "switch All photos / Best of each group"],
-      ["O", "open in Photoshop (RAW opens in Camera Raw)"], ["R", "show in Finder"], ["Esc", "close compare / grid / zoom"]];
+      ["O", "open in Photoshop: the copy in Selects once it's there (RAW opens in Camera Raw)"], ["R", "show in Finder"],
+      ["Click", "select a photo"], ["⌘ / Ctrl-click", "add or remove a photo from the selection"], ["Shift-click", "select everything in between"],
+      ["Shift ← →", "extend the selection"], ["⌘ / Ctrl A", "select everything shown"], ["P X U 1–5", "mark every selected photo at once"],
+      ["Esc", "clear the selection, close compare / grid / zoom"]];
     const t = el("table"); for (const [k, d] of rows) { const tr = el("tr"); const a = el("td"); a.append(el("kbd", "", k)); tr.append(a, el("td", "", d)); t.append(tr); } c.append(t);
     c.append(el("p", "", "Suggestions are only suggestions: nothing is picked, rejected, moved or deleted unless you do it. Copy picks to Selects copies files; it never moves or deletes originals."));
     const a = el("div", "actions"); const ok = el("button", "primary", "OK"); ok.onclick = closeModal; a.append(ok); c.append(a);
@@ -510,7 +563,11 @@ function help() {
 }
 
 document.addEventListener("keydown", e => {
-  if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT" || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "a" && !$("work").classList.contains("hidden") && $("modal").classList.contains("hidden")) {
+    e.preventDefault(); sel = new Set(view.map(v => v.key)); render(); renderCounts(); if (overlay === "grid") renderGrid(); return;
+  }
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
   if (!$("modal").classList.contains("hidden")) { if (e.key === "Escape") closeModal(); return; }
   if ($("work").classList.contains("hidden")) return;
   const k = e.key.toLowerCase();
@@ -520,26 +577,31 @@ document.addEventListener("keydown", e => {
     e.preventDefault(); return;
   }
   const act = {
-    arrowright: () => go(cur + 1), arrowleft: () => go(cur - 1), arrowdown: () => goGroup(1), arrowup: () => goGroup(-1),
+    arrowright: () => go(cur + 1, e.shiftKey), arrowleft: () => go(cur - 1, e.shiftKey), arrowdown: () => goGroup(1), arrowup: () => goGroup(-1),
     " ": () => go(cur + 1),
     p: () => mark({flag: "pick"}), x: () => mark({flag: "reject"}), u: () => mark({flag: ""}),
     0: () => mark({rating: 0}), 1: () => mark({rating: 1}), 2: () => mark({rating: 2}), 3: () => mark({rating: 3}), 4: () => mark({rating: 4}), 5: () => mark({rating: 5}),
     c: () => toggleOverlay("compare"), g: () => toggleOverlay("grid"), z: () => setZoom(!zoom),
     f: () => { showBoxes = !showBoxes; renderBoxes(); }, b: () => setMode(mode === "all" ? "best" : "all"),
     o: () => openFile("photoshop"), r: () => openFile("reveal"), "?": help,
-    escape: () => { if (zoom) setZoom(false); else if (overlay) toggleOverlay(overlay); },
+    escape: () => { if (zoom) setZoom(false); else if (sel.size > 1) { sel = new Set(view[cur] ? [view[cur].key] : []); render(); renderCounts(); } else if (overlay) toggleOverlay(overlay); },
     enter: () => { if (overlay === "grid") toggleOverlay(null); },
   }[k];
   if (act) { e.preventDefault(); act(); }
 });
 
 // ---------- updates ----------
-async function checkUpdate() {
+async function checkUpdate(force) {
+  const v = $("versionBtn");
+  if (force) v.textContent = "Checking…";
   try {
-    const u = await api("/api/update");
+    const u = await api("/api/update" + (force ? "?force=1" : ""));
+    v.textContent = "v" + u.current;
     if (u.available) { $("updateBtn").textContent = "Update to " + u.latest; $("updateBtn").classList.remove("hidden"); $("updateBtn").dataset.latest = u.latest; }
-  } catch (e) {}
+    else if (force) { v.textContent = "v" + u.current + (u.latest ? " · up to date" : " · couldn't check (offline?)"); setTimeout(() => { v.textContent = "v" + u.current; }, 5000); }
+  } catch (e) { if (force) v.textContent = "couldn't check"; }
 }
+$("versionBtn").onclick = () => checkUpdate(true);
 function updateNow() {
   const latest = $("updateBtn").dataset.latest;
   modal(c => {
@@ -577,6 +639,8 @@ $("modeAll").onclick = () => setMode("all"); $("modeBest").onclick = () => setMo
 $("filter").onchange = () => { rebuild(view[cur] && view[cur].key); render(); };
 $("compareBtn").onclick = () => toggleOverlay("compare"); $("gridBtn").onclick = () => toggleOverlay("grid");
 $("selectsBtn").onclick = selects; $("helpBtn").onclick = help;
+$("selectsFolderBtn").onclick = openSelectsFolder;
+$("selectsPsBtn").onclick = () => openInPhotoshop(sel.size > 1 ? selectedKeys() : pickKeys());
 $("quitBtn").onclick = async () => { if (confirm("Stop Photo Cull? Your marks are saved; open the app again to carry on.")) { await api("/api/quit", {}).catch(() => {}); document.body.replaceChildren(el("div", "empty", "Photo Cull has stopped. You can close this tab.")); } };
 window.addEventListener("resize", renderBoxes);
 

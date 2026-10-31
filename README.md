@@ -28,7 +28,8 @@ your shoot folder is the Selects folder, and only when you ask. It never overwri
 After that, open **Photo Cull** from Applications or Launchpad. It opens in your web browser. No Terminal is needed
 at any point.
 
-**Updates:** when there's a new version, Photo Cull shows an **Update** button at the top. One click: it closes,
+**Updates:** when there's a new version, Photo Cull shows an **Update** button at the top. Clicking the version
+number next to it checks straight away. One click: it closes,
 updates itself and reopens, keeping your stars and picks. To check for updates, Photo Cull asks GitHub for the
 latest version number at most every 6 hours. Nothing about your photos is ever sent.
 
@@ -55,15 +56,21 @@ To remove Photo Cull, delete it from Applications and delete the folder
 | **Z** or click | zoom to 100%; move the mouse to look around |
 | **F** | show the faces it found (red = eyes closed) |
 | **B** | switch between *All photos* and *Best of each group* (the fastest first pass) |
-| **O** | open in Photoshop (a RAW opens in Camera Raw) |
+| **O** | open in Photoshop: the copy in Selects once it's there (a RAW opens in Camera Raw) |
 | **R** | show in Finder |
+| click, **⌘/Ctrl-click**, **Shift-click** | select one, add or remove one, select a range (**⌘/Ctrl-A** selects all, **Shift ← →** extends) |
 | **?** | this list |
 
    The **Show** menu narrows things down: not decided yet, picks, rejects, rated 3★ and up, possible problems, eyes
    closed, blurry.
+   P, X, U and the star keys mark every selected photo at once.
 3. Click **Copy picks to Selects…**. You see every file that will be copied before anything happens. Each RAW is
    copied with its JPEG. A RAW also gets a small `.xmp` file holding its star rating, which Bridge, Camera Raw and
-   Lightroom show.
+   Lightroom show. Any Camera Raw / Photoshop edits already saved in a RAW's `.xmp` file come along, and copying
+   again refreshes them if you've edited the original since. Edits you later make to the Selects copy are never
+   overwritten.
+4. Then work from Selects: **Open Selects folder** shows it in Finder, and **Picks in Photoshop** opens all the copies
+   there in Photoshop (Camera Raw for RAWs).
 
 Reopening a shoot is instant: only new or changed photos are analysed, and your picks and stars are remembered.
 Previews of shoots you haven't opened for 60 days are cleared to save disk space. Your marks stay, and the previews

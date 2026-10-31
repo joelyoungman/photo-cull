@@ -312,7 +312,8 @@ class Job:
     # ---------- output ----------
 
     def selects_plan(self, keys):
-        """[(shot key, source file, target file)] for copying these shots into Selects, and the notes about it."""
+        """[(shot key, source file, target file, kind)] for copying these shots into Selects. kind is "photo", or
+        "sidecar" for a RAW's .xmp from Camera Raw / Photoshop / Lightroom (its edits and rating)."""
         dest = self.root / SELECTS
         by_key = {s["key"]: s for s in self.shots()["shots"]}
         plan, taken = [], set()
@@ -321,10 +322,8 @@ class Job:
             if not shot:
                 continue
             files = list(shot["files"])
-            for f in list(files):  # bring each RAW's Lightroom/Camera Raw sidecar along
-                side = Path(f).with_suffix(".xmp")
-                if Path(f).suffix.lower() in photos.RAW_EXTS and (self.root / side).exists():
-                    files.append(side.as_posix())
+            sides = [Path(f).with_suffix(".xmp").as_posix() for f in files
+                     if Path(f).suffix.lower() in photos.RAW_EXTS and (self.root / Path(f).with_suffix(".xmp")).exists()]
             stem = Path(key).name
             n = 1
             while True:  # two cameras can both have a P1000123: never let one overwrite the other
@@ -335,21 +334,31 @@ class Job:
                 n += 1
                 stem = f"{Path(key).name} ({n})"
             taken.update(targets)
-            plan.extend((key, f, t) for f, t in zip(files, targets))
+            plan.extend((key, f, t, "photo") for f, t in zip(files, targets))
+            plan.extend((key, f, dest / (stem + ".xmp"), "sidecar") for f in sides)
         return plan
 
+    def selects_copies(self, keys):
+        """{key: the shot's copy in Selects to open (the RAW if there is one)} for shots already copied there."""
+        out = {}
+        for key, f, target, kind in self.selects_plan(keys):
+            if kind == "photo" and target.exists() and (key not in out or target.suffix.lower() in photos.RAW_EXTS):
+                out[key] = target
+        return out
+
     def copy_selects(self, keys, write_ratings=True):
-        """Copy the shots' files into <shoot>/Selects. Never overwrites, never touches the originals.
-        A RAW without a sidecar gets a new .xmp next to its copy holding the star rating, so Bridge,
-        Camera Raw (Photoshop) and Lightroom show it."""
+        """Copy the shots' files into <shoot>/Selects. Never touches the originals. Photos are never overwritten.
+        A RAW's .xmp sidecar (Camera Raw / Photoshop edits) always comes along, and is refreshed when the original's
+        is newer, but never replaces edits made later on the Selects copy. A RAW without one gets a new .xmp holding
+        the star rating, so Bridge, Camera Raw and Lightroom show it."""
         plan = self.selects_plan(keys)
         marks = self._marks()
         copied, skipped, failed = [], [], []
         (self.root / SELECTS).mkdir(exist_ok=True)
-        for key, f, target in plan:
+        for key, f, target, kind in plan:
             src = self.root / f
-            if target.exists():  # same size: an earlier copy
-                skipped.append(target.name)
+            if target.exists() and (kind == "photo" or target.stat().st_mtime >= src.stat().st_mtime):
+                skipped.append(target.name)  # an earlier copy (same size), or a sidecar edited since
                 continue
             try:
                 shutil.copy2(src, target)  # final name straight away: Drive uploads one finished file
@@ -357,15 +366,16 @@ class Job:
                     raise OSError("copy is incomplete")
                 copied.append(target.name)
             except OSError as e:
-                try:  # never leave a half-copied file behind; it didn't exist before this attempt
-                    target.unlink(missing_ok=True)
-                except OSError:
-                    pass
+                if kind == "photo":
+                    try:  # never leave a half-copied photo behind; it didn't exist before this attempt
+                        target.unlink(missing_ok=True)
+                    except OSError:
+                        pass
                 failed.append(f"{Path(f).name}: {e}")
                 continue
-            if write_ratings and target.suffix.lower() in photos.RAW_EXTS:
+            if write_ratings and kind == "photo" and target.suffix.lower() in photos.RAW_EXTS:
                 side = target.with_suffix(".xmp")
-                if not side.exists() and not any(t == side for _, _, t in plan):
+                if not side.exists() and not any(t == side for _, _, t, _ in plan):
                     rating = marks.get(key, (0, ""))[0]
                     side.write_text(_xmp(rating), "utf-8")
         return {"folder": str(self.root / SELECTS), "copied": copied, "skipped": skipped, "failed": failed}
