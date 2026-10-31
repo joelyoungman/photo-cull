@@ -50,6 +50,9 @@ header .spacer { flex: 1; }
 #viewer.zoom { cursor: move; display: block; }
 #viewer.zoom img.main { max-width: none; max-height: none; position: absolute; }
 #boxes { position: absolute; pointer-events: none; }
+#focus { position: absolute; pointer-events: none; display: none; }
+#viewer.showfocus #focus { display: block; }
+.badge.sharp { pointer-events: auto; cursor: help; }
 #boxes div { position: absolute; border: 2px solid rgba(47,179,111,.9); border-radius: 4px; }
 #boxes div.shut { border-color: var(--reject); }
 .badges { position: absolute; top: 12px; left: 12px; right: 12px; display: flex; flex-wrap: wrap; gap: 6px; pointer-events: none; }
@@ -141,6 +144,7 @@ header .spacer { flex: 1; }
   <div id="stage">
     <div id="viewer">
       <img class="main" id="mainImg" alt="">
+      <img id="focus" alt="">
       <div id="boxes"></div>
       <div class="badges" id="badges"></div>
       <div id="compare" class="hidden"></div>
@@ -200,7 +204,7 @@ let cur = 0;            // index into view
 let mode = "all";       // all | best
 let overlay = null;     // null | compare | grid
 let compareSel = 0;
-let zoom = false, showBoxes = false;
+let zoom = false, showBoxes = false, showFocus = false;
 let lastProgress = null;
 let sel = new Set();     // keys selected with the mouse (click, Cmd/Ctrl-click, Shift-click) or Shift+arrows
 let anchorKey = null;    // where a Shift-click range starts
@@ -348,7 +352,8 @@ function badgesFor(s) {
   if (s.sharp_score != null) {
     const b = el("span", "badge sharp", "Sharpness " + s.sharp_score);
     b.style.borderLeft = "4px solid " + (s.sharp_score >= 67 ? "var(--best)" : s.sharp_score >= 34 ? "var(--warn)" : "var(--reject)");
-    b.title = "Sharper than " + s.sharp_score + "% of this shoot" + (s.main_faces ? ", judged on the faces" : "");
+    b.title = "Sharper than " + s.sharp_score + "% of this shoot" + (s.main_faces ? ", judged on the faces" : "") + ". Hover (or press S) to see which parts are in focus: they glow green.";
+    b.onmouseenter = () => setFocusOverlay(true, true); b.onmouseleave = () => setFocusOverlay(showFocus, true);
     out.push(b);
   }
   if (s.suggested) out.push(el("span", "badge best", "★ Suggested: " + (s.reasons.join(", ") || "best of group")));
@@ -369,7 +374,7 @@ function render() {
   }
   m.alt = s.name;
   setZoom(false);
-  renderBadges(); renderInfo(); renderStrip(); renderBoxes();
+  renderBadges(); renderInfo(); renderStrip(); renderBoxes(); setFocusOverlay(showFocus);
   renderList();
   if (overlay === "compare") renderCompare();
   // warm the next photo
@@ -414,6 +419,17 @@ function renderBoxes() {
     }
   };
   if (m.complete) place(); else m.onload = place;
+}
+function setFocusOverlay(on, temporary) {
+  if (!temporary) showFocus = on;
+  const s = view[cur], v = $("viewer"), f = $("focus"), m = $("mainImg");
+  on = on && s && !s.error && !zoom;
+  v.classList.toggle("showfocus", !!on);
+  if (!on) return;
+  const url = img(s.key, "focus");
+  if (f.getAttribute("src") !== url) f.src = url;
+  const r = m.getBoundingClientRect(), vr = v.getBoundingClientRect();
+  Object.assign(f.style, {left: (r.left - vr.left) + "px", top: (r.top - vr.top) + "px", width: r.width + "px", height: r.height + "px"});
 }
 function renderCompare() {
   const s = view[cur]; const g = groupOf(s); const c = $("compare"); c.replaceChildren();
@@ -626,7 +642,7 @@ function help() {
     c.append(el("h2", "", "Keyboard"));
     const rows = [["← →", "previous / next photo"], ["↑ ↓", "previous / next group (lands on the suggested best)"], ["P", "pick"], ["X", "reject"], ["U", "undo pick / reject"],
       ["1 – 5", "star rating"], ["0", "clear stars"], ["C", "compare the group side by side (← → choose, P/X mark)"], ["G", "grid of all photos"],
-      ["Z or click", "zoom to 100% (move the mouse to look around)"], ["F", "show faces (red = eyes closed)"], ["B", "switch All photos / Best of each group"],
+      ["Z or click", "zoom to 100% (move the mouse to look around)"], ["F", "show faces (red = eyes closed)"], ["S, or hover Sharpness", "show which parts are in focus (green glow)"], ["B", "switch All photos / Best of each group"],
       ["O", "open in Photoshop: the copy in Selects once it's there (RAW opens in Camera Raw)"], ["R", "show in Finder"],
       ["Click", "select a photo"], ["⌘ / Ctrl-click", "add or remove a photo from the selection"], ["Shift-click", "select everything in between"],
       ["Shift ← →", "extend the selection"], ["⌘ / Ctrl A", "select everything shown"], ["P X U 1–5", "mark every selected photo at once"],
@@ -658,6 +674,7 @@ document.addEventListener("keydown", e => {
     0: () => mark({rating: 0}), 1: () => mark({rating: 1}), 2: () => mark({rating: 2}), 3: () => mark({rating: 3}), 4: () => mark({rating: 4}), 5: () => mark({rating: 5}),
     c: () => toggleOverlay("compare"), g: () => toggleOverlay("grid"), z: () => setZoom(!zoom),
     f: () => { showBoxes = !showBoxes; renderBoxes(); }, b: () => setMode(mode === "all" ? "best" : "all"),
+    s: () => setFocusOverlay(!showFocus),
     o: () => openFile("photoshop"), r: () => openFile("reveal"), "?": help,
     escape: () => { if (zoom) setZoom(false); else if (sel.size > 1) { sel = new Set(view[cur] ? [view[cur].key] : []); render(); renderCounts(); } else if (overlay) toggleOverlay(overlay); },
     enter: () => { if (overlay === "grid") toggleOverlay(null); },
@@ -722,7 +739,8 @@ $("selectsFolderBtn").onclick = openSelectsFolder;
 $("deletesBtn").onclick = moveRejects; $("putBackBtn").onclick = putBack;
 $("selectsPsBtn").onclick = () => openInPhotoshop(sel.size > 1 ? selectedKeys() : pickKeys());
 $("quitBtn").onclick = async () => { if (confirm("Stop Photo Cull? Your marks are saved; open the app again to carry on.")) { await api("/api/quit", {}).catch(() => {}); document.body.replaceChildren(el("div", "empty", "Photo Cull has stopped. You can close this tab.")); } };
-window.addEventListener("resize", renderBoxes);
+window.addEventListener("resize", () => { renderBoxes(); setFocusOverlay(showFocus); });
+$("mainImg").addEventListener("load", () => setFocusOverlay(showFocus));
 
 // Photos added to the shoot folder later: look for them when she comes back to this page (at most every 30 s),
 // or when she clicks "Check for new photos". Only new or changed photos are analysed; marks stay.

@@ -229,11 +229,11 @@ async def image(request):
     j = need_job()
     size = request.query_params.get("size", "s")
     key = request.query_params.get("key", "")
-    if size not in jobs.THUMB_PX:
+    if size not in jobs.THUMB_PX and size != "focus":
         raise ValueError("bad size")
-    path = j.thumb(key, size)
-    if not path.is_file():
+    if not j.thumb(key, "l").is_file():
         return Response(status_code=404)
+    path = await run_in_threadpool(j.focus_map, key) if size == "focus" else j.thumb(key, size)
     return FileResponse(path, headers={"Cache-Control": "private, max-age=60"})
 
 

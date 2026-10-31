@@ -56,6 +56,7 @@ To remove Photo Cull, delete it from Applications and delete the folder
 | **G** | grid of everything |
 | **Z** or click | zoom to 100%; move the mouse to look around |
 | **F** | show the faces it found (red = eyes closed) |
+| **S** (or hover Sharpness) | show which parts are in focus (green glow) |
 | **B** | switch between *All photos* and *Best of each group* (the fastest first pass) |
 | **O** | open in Photoshop: the copy in Selects once it's there (a RAW opens in Camera Raw) |
 | **R** | show in Finder |
@@ -88,6 +89,8 @@ are remade if you open the shoot again.
   Photos of people are judged on their faces. It's shown on the photo (green / amber / red) and on each thumbnail, and
   **Order: sharpest first** lists the shoot from sharpest to softest. It's a guide, not a verdict: a soft photo can
   still be the keeper.
+- **Which parts are sharp**: hover over the Sharpness badge, or press **S** to keep it on, and the in-focus parts of
+  the photo glow green, like focus peaking on a camera. A blurry photo barely glows at all.
 
 - **Groups**: photos from the same camera taken within 1.5 s of each other (a burst, including the GH5's
   6K/4K Photo bursts), or within 45 s that look alike. Two bodies of the same model are kept apart by their card

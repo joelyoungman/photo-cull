@@ -24,6 +24,7 @@ from . import photos, quality
 ANALYSIS_V = 2  # bump to re-analyse every shot after changing what we measure
 WORKERS = 2  # at most 2 cores busy (measured: 1.7 on average); the rest of the computer stays free
 THUMB_PX = {"s": 400, "l": quality.ANALYSE_PX}  # RAW previews are only 1600-1900 px anyway
+FOCUS_FROM, FOCUS_FULL = 15.0, 45.0  # local sharpness where the focus overlay starts to glow, and where it's full
 THUMB_DAYS = 60  # previews of shoots not opened for this long are deleted (marks are kept; they rebuild on reopen)
 SELECTS = "Selects"
 DELETES = "Deletes"  # rejects are MOVED here (never deleted); every move is recorded so it can be put back
@@ -187,6 +188,7 @@ class Job:
                 self.db.execute("DELETE FROM shots WHERE key = ?", (k,))
                 for size in THUMB_PX:
                     self.thumb(k, size).unlink(missing_ok=True)
+                (self.thumbs / f"{self._thumb_name(k)}-focus.png").unlink(missing_ok=True)
         todo = []
         for key, shot in shots.items():
             try:
@@ -250,6 +252,27 @@ class Job:
 
     def thumb(self, key, size):
         return self.thumbs / f"{self._thumb_name(key)}-{size}.jpg"
+
+    def focus_map(self, key):
+        """A transparent PNG, the size of the large preview, that glows green where the photo is in focus (like a
+        camera's focus peaking). The scale is fixed, not stretched per photo, so a blurry photo barely glows."""
+        import cv2
+        from PIL import Image
+
+        src = self.thumb(key, "l")
+        out = self.thumbs / f"{self._thumb_name(key)}-focus.png"
+        if out.exists() and out.stat().st_mtime >= src.stat().st_mtime:
+            return out
+        gray = np.asarray(Image.open(src).convert("L"), dtype=np.float32)
+        energy = cv2.GaussianBlur(np.abs(cv2.Laplacian(gray, cv2.CV_32F, ksize=3)), (0, 0), 6)
+        alpha = np.clip((energy - FOCUS_FROM) / (FOCUS_FULL - FOCUS_FROM), 0, 1) * 170
+        rgba = np.zeros(gray.shape + (4,), np.uint8)
+        rgba[..., 0], rgba[..., 1], rgba[..., 2] = 40, 255, 90
+        rgba[..., 3] = alpha.astype(np.uint8)
+        tmp = out.with_suffix(".tmp")
+        Image.fromarray(rgba, "RGBA").save(tmp, "PNG", optimize=True)
+        tmp.replace(out)
+        return out
 
     # ---------- marks ----------
 
