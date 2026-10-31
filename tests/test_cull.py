@@ -139,3 +139,27 @@ def test_photoshop_sidecar_goes_to_selects(job):
     os.utime(side, (later + 5, later + 5))
     job.copy_selects([key])
     assert side.read_text("utf-8") == "edited in Selects"
+
+
+def test_rejects_to_deletes_and_back(job):
+    """Rejects move (never delete) into <shoot>/Deletes with their sidecars, and can be put back."""
+    from photocull import job as jobs
+
+    card = job.root / "cardA"
+    (card / "DSC00112.ARW").write_bytes(b"raw")
+    (card / "DSC00112.xmp").write_text("edits", "utf-8")
+    job.analyse()
+    key = "cardA/DSC00112"
+    r = jobs.move_to_deletes(job, [key])
+    assert sorted(r["moved"]) == ["DSC00112.ARW", "DSC00112.JPG", "DSC00112.xmp"] and not r["failed"]
+    assert not (card / "DSC00112.JPG").exists() and (job.root / "Deletes" / "DSC00112.JPG").exists()
+    assert key not in {s["key"] for s in job.shots()["shots"]}
+    assert jobs.moved_count(job) == 3
+    job.analyse()  # files in Deletes are not analysed as part of the shoot
+    assert key not in {s["key"] for s in job.shots()["shots"]}
+
+    back = jobs.put_back(job)
+    job._thread.join()
+    assert sorted(back["restored"]) == ["DSC00112.ARW", "DSC00112.JPG", "DSC00112.xmp"]
+    assert (card / "DSC00112.xmp").read_text("utf-8") == "edits"
+    assert key in {s["key"] for s in job.shots()["shots"]} and jobs.moved_count(job) == 0

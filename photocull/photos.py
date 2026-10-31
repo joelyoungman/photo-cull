@@ -19,7 +19,7 @@ Image.MAX_IMAGE_PIXELS = None  # the photographer's own files, not untrusted upl
 JPEG_EXTS = {".jpg", ".jpeg"}
 IMAGE_EXTS = JPEG_EXTS | {".heic", ".heif", ".png", ".tif", ".tiff"}
 RAW_EXTS = {".arw", ".rw2", ".dng", ".cr2", ".cr3", ".nef", ".raf", ".orf"}
-SKIP_DIRS = {".photocull", "selects"}  # our own state, and copies we made (compared lower-case)
+SKIP_DIRS = {".photocull", "selects", "deletes"}  # our own state, copies we made, photos set aside (lower-case)
 
 
 @dataclass

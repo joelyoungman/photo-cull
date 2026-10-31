@@ -6,8 +6,9 @@ Choose a shoot's folder and Photo Cull looks at every photo in it. It groups bur
 the best of each group. It flags photos that look blurry, have closed eyes, or are too dark or bright. You stay in
 charge: you go through with the keyboard, pick and star what you want, and copy the picks to a **Selects** folder.
 
-**Your originals are never changed, moved or deleted.** Photo Cull only reads them. The one thing it writes inside
-your shoot folder is the Selects folder, and only when you ask. It never overwrites a file there.
+**Your originals are never changed or deleted.** Photo Cull only reads them. It writes inside your shoot folder only
+when you ask: copies in a Selects folder (never overwriting a photo there), and rejects moved into a Deletes folder,
+which you can put back.
 
 > **Early days on a real Mac.** Photo Cull is tested automatically on GitHub's virtual Apple Silicon Macs
 > (macOS 15 and 26): installing from the zip, opening the app, analysing sample photos, and the review page's controls
@@ -69,7 +70,10 @@ To remove Photo Cull, delete it from Applications and delete the folder
    Lightroom show. Any Camera Raw / Photoshop edits already saved in a RAW's `.xmp` file come along, and copying
    again refreshes them if you've edited the original since. Edits you later make to the Selects copy are never
    overwritten.
-4. Then work from Selects: **Open Selects folder** shows it in Finder, and **Picks in Photoshop** opens all the copies
+4. To clear out the rejects: **Move rejects to Deletes…** moves the photos marked X (RAW, JPEG and edits together)
+   into a **Deletes** folder inside the shoot, after showing you the list. Nothing is deleted. **Undo**, or
+   **Put back from Deletes** later, moves them back; delete the Deletes folder yourself once you're sure.
+5. Then work from Selects: **Open Selects folder** shows it in Finder, and **Picks in Photoshop** opens all the copies
    there in Photoshop (Camera Raw for RAWs).
 
 Reopening a shoot is instant: only new or changed photos are analysed, and your picks and stars are remembered.

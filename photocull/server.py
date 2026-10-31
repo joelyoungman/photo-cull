@@ -221,7 +221,8 @@ async def shots(request):
     j = need_job()
     progress = dict(j.progress)  # read first: if it says "done", the shots below include every finished photo
     data = await run_in_threadpool(j.shots)
-    return JSONResponse({"path": str(j.root), "progress": progress, **data})
+    moved = await run_in_threadpool(jobs.moved_count, j)
+    return JSONResponse({"path": str(j.root), "progress": progress, "in_deletes": moved, **data})
 
 
 async def image(request):
@@ -261,6 +262,28 @@ async def selects(request):
                              "files": [{"from": f, "to": t.name, "exists": t.exists(), "kind": k} for _, f, t, k in plan]})
     result = await run_in_threadpool(j.copy_selects, keys, bool(body.get("write_ratings", True)))
     return JSONResponse(result)
+
+
+async def deletes(request):
+    """action "plan": what moving these shots to Deletes would move; "move": move them; "putback": move back
+    everything Photo Cull put in Deletes (or just these shots); "folder": show the Deletes folder."""
+    j = need_job()
+    body = await request.json()
+    action = body.get("action")
+    if action == "plan":
+        plan = await run_in_threadpool(jobs._deletes_plan, j, known_keys(j, body["keys"]))
+        return JSONResponse({"folder": str(j.root / jobs.DELETES),
+                             "files": [{"from": f, "to": t.name} for _, f, t in plan]})
+    if action == "move":
+        return JSONResponse(await run_in_threadpool(jobs.move_to_deletes, j, known_keys(j, body["keys"])))
+    if action == "putback":
+        return JSONResponse(await run_in_threadpool(jobs.put_back, j, body.get("keys")))
+    if action == "folder":
+        folder = j.root / jobs.DELETES
+        if not folder.is_dir():
+            raise ValueError("there's no Deletes folder yet")
+        return JSONResponse({"ok": await run_in_threadpool(open_with, folder)})
+    raise ValueError("unknown action")
 
 
 async def open_file(request):
@@ -320,6 +343,7 @@ app = Starlette(routes=[
     Route("/api/selects", endpoint(selects), methods=["POST"]),
     Route("/api/openfile", endpoint(open_file), methods=["POST"]),
     Route("/api/openselects", endpoint(open_selects), methods=["POST"]),
+    Route("/api/deletes", endpoint(deletes), methods=["POST"]),
     Route("/api/reanalyse", endpoint(reanalyse), methods=["POST"]),
     Route("/api/quit", endpoint(quit_app), methods=["POST"]),
     Route("/api/update", endpoint(update), methods=["GET", "POST"]),

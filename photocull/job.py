@@ -26,6 +26,7 @@ WORKERS = 2  # at most 2 cores busy (measured: 1.7 on average); the rest of the 
 THUMB_PX = {"s": 400, "l": quality.ANALYSE_PX}  # RAW previews are only 1600-1900 px anyway
 THUMB_DAYS = 60  # previews of shoots not opened for this long are deleted (marks are kept; they rebuild on reopen)
 SELECTS = "Selects"
+DELETES = "Deletes"  # rejects are MOVED here (never deleted); every move is recorded so it can be put back
 
 # Grouping: shots are taken in time order; a shot joins the group before it when it's the same camera and
 BURST_GAP = 1.5  # ...within this many seconds of the previous frame (a burst, GH5 6K/4K Photo included)
@@ -128,6 +129,7 @@ CREATE TABLE IF NOT EXISTS shots (
 );
 CREATE TABLE IF NOT EXISTS marks (key TEXT PRIMARY KEY, rating INTEGER DEFAULT 0, flag TEXT DEFAULT '', updated REAL);
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS moves (dst TEXT PRIMARY KEY, src TEXT, key TEXT, at REAL);
 """
 
 
@@ -379,6 +381,91 @@ class Job:
                     rating = marks.get(key, (0, ""))[0]
                     side.write_text(_xmp(rating), "utf-8")
         return {"folder": str(self.root / SELECTS), "copied": copied, "skipped": skipped, "failed": failed}
+
+
+# ---------- Deletes: set rejects aside, reversibly ----------
+
+def _deletes_plan(job, keys):
+    """[(shot key, source file, target file)] for moving these shots, sidecars included, into <shoot>/Deletes.
+    Names never collide with something already there: a whole shot gets " (2)" etc. instead."""
+    dest = job.root / DELETES
+    by_key = {s["key"]: s for s in job.shots()["shots"]}
+    plan, taken = [], set()
+    for key in keys:
+        shot = by_key.get(key)
+        if not shot:
+            continue
+        files = list(shot["files"])
+        files += [Path(f).with_suffix(".xmp").as_posix() for f in shot["files"]
+                  if Path(f).suffix.lower() in photos.RAW_EXTS and (job.root / Path(f).with_suffix(".xmp")).exists()]
+        stem, n = Path(key).name, 1
+        while True:
+            targets = [dest / (stem + Path(f).suffix) for f in files]
+            if not any(t.exists() or t in taken for t in targets):
+                break
+            n += 1
+            stem = f"{Path(key).name} ({n})"
+        taken.update(targets)
+        plan.extend((key, f, t) for f, t in zip(files, targets))
+    return plan
+
+
+def _move(src, dst):
+    """Move one file without ever overwriting anything."""
+    if dst.exists():
+        raise FileExistsError(f"{dst.name} is already there")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(src), str(dst))  # a rename within the shoot folder; copies only across drives
+
+
+def move_to_deletes(job, keys):
+    """Move these shots' files into <shoot>/Deletes. Nothing is deleted; each move is recorded for put_back."""
+    moved, failed = [], []
+    for key, f, target in _deletes_plan(job, keys):
+        try:
+            _move(job.root / f, target)
+        except OSError as e:
+            failed.append(f"{Path(f).name}: {e}")
+            continue
+        with job.lock:
+            job.db.execute("INSERT OR REPLACE INTO moves VALUES (?, ?, ?, ?)",
+                           (target.relative_to(job.root).as_posix(), f, key, time.time()))
+            job.db.execute("DELETE FROM shots WHERE key = ?", (key,))
+        moved.append(Path(f).name)
+    job._invalidate()
+    return {"folder": str(job.root / DELETES), "moved": moved, "failed": failed}
+
+
+def put_back(job, keys=None):
+    """Move files Photo Cull put in Deletes back where they came from (all of them, or these shots'). Files someone
+    has since removed from Deletes, or whose old place is taken again, are left alone and reported."""
+    with job.lock:
+        rows = job.db.execute("SELECT dst, src, key FROM moves").fetchall()
+    restored, failed = [], []
+    for dst, src, key in rows:
+        if keys is not None and key not in keys:
+            continue
+        d, s = job.root / dst, job.root / src
+        if not d.exists():
+            failed.append(f"{d.name}: no longer in Deletes")
+        else:
+            try:
+                _move(d, s)
+                restored.append(s.name)
+            except OSError as e:
+                failed.append(f"{d.name}: {e}")
+                continue
+        with job.lock:
+            job.db.execute("DELETE FROM moves WHERE dst = ?", (dst,))
+    job.start()  # put-back photos are analysed again (their previews went when they were moved)
+    return {"restored": restored, "failed": failed}
+
+
+def moved_count(job):
+    """How many recorded moves still have their file sitting in Deletes."""
+    with job.lock:
+        rows = job.db.execute("SELECT dst FROM moves").fetchall()
+    return sum((job.root / d).exists() for (d,) in rows)
 
 
 # ---------- helpers ----------

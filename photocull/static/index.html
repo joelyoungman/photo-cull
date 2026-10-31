@@ -16,6 +16,7 @@ button { font: inherit; color: var(--text); background: var(--panel2); border: 1
 button:hover { border-color: #555a62; }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
 button.on { border-color: var(--accent); color: #fff; background: #23344f; }
+button.danger { border-color: #6b2b28; color: #ffb3ae; }
 select, input[type=text] { font: inherit; color: var(--text); background: #0d0e10; border: 1px solid var(--line); border-radius: 7px; padding: 6px 8px; }
 kbd { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--panel2); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 1px 5px; }
 .hidden { display: none !important; }
@@ -174,6 +175,8 @@ header .spacer { flex: 1; }
         <button id="selectsFolderBtn" style="flex:1" title="Show the Selects folder in Finder">Open Selects folder</button>
         <button id="selectsPsBtn" style="flex:1" title="Open the copies in Selects in Photoshop (RAW opens in Camera Raw)">Picks in Photoshop</button>
       </div>
+      <button id="deletesBtn" class="danger" title="Move the photos marked X into a Deletes folder in this shoot. Nothing is deleted.">Move rejects to Deletes…</button>
+      <button id="putBackBtn" class="hidden" title="Move everything Photo Cull put in Deletes back where it came from">Put back from Deletes</button>
     </div>
   </aside>
 </section>
@@ -245,6 +248,8 @@ async function load(first) {
   const d = await api("/api/shots");
   data = d;
   $("folderName").textContent = d.path;
+  $("putBackBtn").textContent = "Put back from Deletes (" + d.in_deletes + ")";
+  $("putBackBtn").classList.toggle("hidden", !d.in_deletes);
   showProgress(d.progress);
   rebuild(keep);
   if (first) render();
@@ -546,6 +551,60 @@ async function selects() {
     a.append(cancel, go); c.append(a);
   });
 }
+async function moveRejects() {
+  const rejects = data.shots.filter(s => s.flag === "reject").map(s => s.key);
+  const okBtn = (c, label, fn, cls) => { const b = el("button", cls || "", label); b.onclick = fn; return b; };
+  if (!rejects.length) {
+    modal(c => { c.append(el("h2", "", "No rejects yet"), el("p", "", "Mark the photos you don't want with X (or select several and press X), then move them here.")); const a = el("div", "actions"); a.append(okBtn(c, "OK", closeModal, "primary")); c.append(a); });
+    return;
+  }
+  const plan = await api("/api/deletes", {action: "plan", keys: rejects});
+  modal(c => {
+    c.append(el("h2", "", "Move " + rejects.length + " rejects to Deletes?"));
+    const p = el("p"); p.append("Moves ", el("b", "", String(plan.files.length)), " files (RAW, JPEG and edits together) out of the shoot into:"); c.append(p);
+    c.append(el("p", "", plan.folder));
+    const ul = el("ul"); for (const f of plan.files) ul.append(el("li", "", f.from)); c.append(ul);
+    c.append(el("p", "", "Nothing is deleted. You can put them back any time with \"Put back from Deletes\", or delete the Deletes folder yourself once you're sure."));
+    const a = el("div", "actions");
+    const go = el("button", "danger", "Move " + plan.files.length + " files");
+    go.onclick = async () => {
+      go.disabled = true; go.textContent = "Moving…";
+      try {
+        const r = await api("/api/deletes", {action: "move", keys: rejects});
+        c.replaceChildren(el("h2", "", "Moved to Deletes"));
+        c.append(el("p", "", "Moved " + r.moved.length + " files. Nothing has been deleted."));
+        if (r.failed.length) { c.append(el("p", "", "These didn't move:")); const u = el("ul"); r.failed.forEach(f => u.append(el("li", "", f))); c.append(u); }
+        const aa = el("div", "actions");
+        aa.append(
+          okBtn(c, "Undo", async () => { await api("/api/deletes", {action: "putback", keys: rejects}); closeModal(); await load(false); render(); }),
+          okBtn(c, "Open Deletes folder", async () => { try { await api("/api/deletes", {action: "folder"}); } catch (e) { alert(e.message); } }),
+          okBtn(c, "Done", closeModal, "primary"));
+        c.append(aa);
+        await load(false); render();
+      } catch (e) { go.textContent = "Failed: " + e.message; }
+    };
+    a.append(okBtn(c, "Cancel", closeModal), go); c.append(a);
+  });
+}
+async function putBack() {
+  modal(c => {
+    c.append(el("h2", "", "Put everything back from Deletes?"));
+    c.append(el("p", "", "Moves the photos Photo Cull put in the Deletes folder back to where they were, and analyses them again."));
+    const a = el("div", "actions");
+    const cancel = el("button", "", "Cancel"); cancel.onclick = closeModal;
+    const go = el("button", "primary", "Put back");
+    go.onclick = async () => {
+      go.disabled = true;
+      const r = await api("/api/deletes", {action: "putback"});
+      c.replaceChildren(el("h2", "", "Put back " + r.restored.length + " files"));
+      if (r.failed.length) { c.append(el("p", "", "Left alone:")); const u = el("ul"); r.failed.forEach(f => u.append(el("li", "", f))); c.append(u); }
+      const aa = el("div", "actions"); const ok = el("button", "primary", "Done"); ok.onclick = closeModal; aa.append(ok); c.append(aa);
+      await load(false); render();
+    };
+    a.append(cancel, go); c.append(a);
+  });
+}
+
 function help() {
   modal(c => {
     c.append(el("h2", "", "Keyboard"));
@@ -557,7 +616,7 @@ function help() {
       ["Shift ← →", "extend the selection"], ["⌘ / Ctrl A", "select everything shown"], ["P X U 1–5", "mark every selected photo at once"],
       ["Esc", "clear the selection, close compare / grid / zoom"]];
     const t = el("table"); for (const [k, d] of rows) { const tr = el("tr"); const a = el("td"); a.append(el("kbd", "", k)); tr.append(a, el("td", "", d)); t.append(tr); } c.append(t);
-    c.append(el("p", "", "Suggestions are only suggestions: nothing is picked, rejected, moved or deleted unless you do it. Copy picks to Selects copies files; it never moves or deletes originals."));
+    c.append(el("p", "", "Suggestions are only suggestions: nothing is picked, rejected, moved or deleted unless you do it. Copy picks to Selects copies files. Move rejects to Deletes moves files into a Deletes folder in the shoot, which you can put back any time; Photo Cull never deletes anything."));
     const a = el("div", "actions"); const ok = el("button", "primary", "OK"); ok.onclick = closeModal; a.append(ok); c.append(a);
   });
 }
@@ -640,6 +699,7 @@ $("filter").onchange = () => { rebuild(view[cur] && view[cur].key); render(); };
 $("compareBtn").onclick = () => toggleOverlay("compare"); $("gridBtn").onclick = () => toggleOverlay("grid");
 $("selectsBtn").onclick = selects; $("helpBtn").onclick = help;
 $("selectsFolderBtn").onclick = openSelectsFolder;
+$("deletesBtn").onclick = moveRejects; $("putBackBtn").onclick = putBack;
 $("selectsPsBtn").onclick = () => openInPhotoshop(sel.size > 1 ? selectedKeys() : pickKeys());
 $("quitBtn").onclick = async () => { if (confirm("Stop Photo Cull? Your marks are saved; open the app again to carry on.")) { await api("/api/quit", {}).catch(() => {}); document.body.replaceChildren(el("div", "empty", "Photo Cull has stopped. You can close this tab.")); } };
 window.addEventListener("resize", renderBoxes);
