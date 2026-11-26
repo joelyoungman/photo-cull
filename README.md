@@ -57,6 +57,7 @@ To remove Photo Cull, delete it from Applications and delete the folder
 | **Z** or click | zoom to 100%; move the mouse to look around |
 | **F** | show the faces it found (red = eyes closed) |
 | **S** (or hover Sharpness) | show which parts are in focus (green glow) |
+| **E** | show the camera settings (shutter, aperture, ISO, focal length, camera) in the photo's corner; on by default |
 | **B** | switch between *All photos* and *Best of each group* (the fastest first pass) |
 | **O** | open in Photoshop: the copy in Selects once it's there (a RAW opens in Camera Raw) |
 | **R** | show in Finder |

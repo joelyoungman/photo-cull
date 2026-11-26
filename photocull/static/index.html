@@ -124,6 +124,17 @@ header .spacer { flex: 1; }
 .modal td { padding: 4px 6px; vertical-align: top; }
 .modal td:first-child { white-space: nowrap; }
 .empty { color: var(--muted); padding: 40px; text-align: center; }
+/* camera settings on the photo (E): a quiet see-through label in the photo's corner */
+.shot { position: absolute; right: 12px; bottom: 12px; z-index: 2; pointer-events: none; display: flex; flex-direction: column; align-items: flex-end; gap: 3px;
+  padding: 6px 10px; border-radius: 9px; background: rgba(12,12,14,.4); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  color: rgba(255,255,255,.93); font: 500 12.5px/1.25 system-ui, -apple-system, "Segoe UI", sans-serif; font-variant-numeric: tabular-nums;
+  text-shadow: 0 1px 2px rgba(0,0,0,.55); opacity: .88; }
+.shot[hidden] { display: none; }
+.shot .row { display: flex; gap: 12px; }
+.shot span, .shot .cam { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.shot svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; opacity: .75; flex: none; }
+.shot .iso { font: 700 7px/1 system-ui, -apple-system, "Segoe UI", sans-serif; font-style: normal; letter-spacing: .3px; border: 1.2px solid currentColor; border-radius: 2px; padding: 1.5px 2px; opacity: .75; }
+.shot .cam { font-size: 11px; color: rgba(255,255,255,.68); }
 </style>
 </head>
 <body>
@@ -158,6 +169,7 @@ header .spacer { flex: 1; }
       <img id="focus" alt="">
       <div id="boxes"></div>
       <div class="badges" id="badges"></div>
+      <div class="shot" id="shot" hidden></div>
       <div id="compare" class="hidden"></div>
       <div id="grid" class="hidden"></div>
     </div>
@@ -191,6 +203,9 @@ header .spacer { flex: 1; }
       <div class="row">
         <button id="focusBtn" title="Show which parts of the photo are in focus: they glow green (S)">Focus <kbd>S</kbd></button>
         <button id="facesBtn" title="Show the faces found; red = eyes closed (F)">Faces <kbd>F</kbd></button>
+      </div>
+      <div class="row">
+        <button id="shotBtn" title="Show the camera settings (shutter, aperture, ISO, focal length, camera) in the photo's corner (E)">Settings on photo <kbd>E</kbd></button>
       </div>
     </div>
     <div id="list"></div>
@@ -406,7 +421,7 @@ function render() {
   }
   m.alt = s.name;
   setZoom(false);
-  renderBadges(); renderInfo(); renderStrip(); renderBoxes(); setFocusOverlay(showFocus);
+  renderBadges(); renderInfo(); renderStrip(); renderBoxes(); setFocusOverlay(showFocus); fillShot($("shot"), s.error ? null : s);
   renderList();
   if (overlay === "compare") renderCompare();
   // warm the next photo
@@ -739,7 +754,7 @@ function help() {
     c.append(el("h2", "", "Keyboard"));
     const rows = [["← →", "previous / next photo"], ["↑ ↓", "previous / next group (lands on the suggested best)"], ["P", "pick"], ["X", "reject"], ["U", "undo pick / reject"],
       ["1 – 5", "star rating"], ["0", "clear stars"], ["C", "compare the group side by side (← → choose, P/X mark)"], ["G", "grid of all photos"],
-      ["Z or click", "zoom to 100% (move the mouse to look around)"], ["F", "show faces (red = eyes closed; click a face to exclude that person)"], ["S, or hover Sharpness", "show which parts are in focus (green glow)"], ["B", "switch All photos / Best of each group"],
+      ["Z or click", "zoom to 100% (move the mouse to look around)"], ["F", "show faces (red = eyes closed; click a face to exclude that person)"], ["S, or hover Sharpness", "show which parts are in focus (green glow)"], ["E", "show the camera settings in the photo's corner"], ["B", "switch All photos / Best of each group"],
       ["O", "open in Photoshop: the copy in Selects once it's there (RAW opens in Camera Raw)"], ["R", "show in Finder"],
       ["Click", "select a photo"], ["⌘ / Ctrl-click", "add or remove a photo from the selection"], ["Shift-click", "select everything in between"],
       ["Shift ← →", "extend the selection"], ["⌘ / Ctrl A", "select everything shown"], ["P X U 1–5", "mark every selected photo at once"],
@@ -771,13 +786,69 @@ document.addEventListener("keydown", e => {
     0: () => mark({rating: 0}), 1: () => mark({rating: 1}), 2: () => mark({rating: 2}), 3: () => mark({rating: 3}), 4: () => mark({rating: 4}), 5: () => mark({rating: 5}),
     c: () => toggleOverlay("compare"), g: () => toggleOverlay("grid"), z: () => setZoom(!zoom),
     f: () => toggleFaces(), b: () => setMode(mode === "all" ? "best" : "all"),
-    s: () => setFocusOverlay(!showFocus),
+    s: () => setFocusOverlay(!showFocus), e: toggleShot,
     o: () => openFile("photoshop"), r: () => openFile("reveal"), "?": help,
     escape: () => { if (zoom) setZoom(false); else if (sel.size > 1) { sel = new Set(view[cur] ? [view[cur].key] : []); render(); renderCounts(); } else if (overlay) toggleOverlay(overlay); },
     enter: () => { if (overlay === "grid") toggleOverlay(null); },
   }[k];
   if (act) { e.preventDefault(); act(); }
 });
+
+// ---------- camera settings on the photo (E) ----------
+// Shutter speed, aperture, ISO and focal length in a small see-through label in the photo's bottom-right corner, the
+// camera (and lens) under it, so a frame's settings are there while you look, and in a screenshot you share.
+// It sits on the photo itself, not the black around it. On or off is remembered.
+const SHOT_ICONS = {
+  ss: '<svg viewBox="0 0 24 24"><circle cx="12" cy="13.5" r="7.5"/><path d="M12 13.5V10M10 2.5h4M12 2.5V6M18.2 7.3l1.6-1.6"/></svg>',
+  f: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m14.31 8 5.74 9.94M9.69 8h11.48M7.38 12l5.74-9.94M9.69 16 3.95 6.06M14.31 16H2.83M16.62 12l-5.74 9.94"/></svg>',
+  mm: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4.5"/></svg>',
+  cam: '<svg viewBox="0 0 24 24"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3z"/><circle cx="12" cy="13" r="3.5"/></svg>',
+};
+let showShot = true;
+try { showShot = localStorage.getItem("showShot") !== "0"; } catch (e) {}
+const shotNum = x => String(+(+x).toFixed(1));  // 8.0 -> "8", 2.79 -> "2.8"
+const shotEsc = s => String(s).replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+// EXIF gives "1/250", "13/10" or "0.004": show it the way a camera does (1/250s, 1.3s)
+function shotSpeed(x) {
+  if (x == null || x === "") return "";
+  const [a, b] = String(x).split("/").map(Number), v = b ? a / b : a;
+  if (!(v > 0)) return String(x);
+  return (v >= 0.35 ? shotNum(v) : "1/" + Math.round(1 / v)) + "s";
+}
+// Fill a .shot label from {exposure, fnumber, iso, focal, camera, lens}; hidden when off or the photo has none.
+function fillShot(box, d) {
+  const part = (icon, text) => text ? `<span>${icon}${shotEsc(text)}</span>` : "";
+  const top = d ? part(SHOT_ICONS.ss, shotSpeed(d.exposure)) + part(SHOT_ICONS.f, d.fnumber ? "f/" + shotNum(d.fnumber) : "") +
+    (d.iso ? `<span><i class="iso">ISO</i>${shotEsc(d.iso)}</span>` : "") + part(SHOT_ICONS.mm, d.focal ? shotNum(d.focal) + "mm" : "") : "";
+  const cam = d ? [d.camera, d.lens].filter(Boolean).join(" · ") : "";
+  box.innerHTML = (top ? `<div class="row">${top}</div>` : "") + (cam ? `<div class="cam">${SHOT_ICONS.cam}${shotEsc(cam)}</div>` : "");
+  box.hidden = !showShot || !(top || cam);
+  placeShot(box);
+}
+// Into the photo's bottom-right corner (or the viewer's, when the photo is zoomed past it).
+function placeShot(box) {
+  const host = box.parentElement, img = box.shotImg;
+  if (box.hidden || !host || !img) return;
+  const h = host.getBoundingClientRect(), r = img.getBoundingClientRect();
+  const right = r.width ? Math.max(0, h.right - Math.min(r.right, h.right)) : 0, bottom = r.height ? Math.max(0, h.bottom - Math.min(r.bottom, h.bottom)) : 0;
+  box.style.right = right + 12 + "px"; box.style.bottom = bottom + 12 + "px";
+}
+// Keep a label on its photo as the photo loads, changes shape, zooms or the window resizes.
+function watchShot(box, img) {
+  box.shotImg = img;
+  const again = () => placeShot(box);
+  img.addEventListener("load", again);
+  window.addEventListener("resize", again);
+  if (window.ResizeObserver) new ResizeObserver(again).observe(img);
+}
+function toggleShot() {
+  showShot = !showShot;
+  try { localStorage.setItem("showShot", showShot ? "1" : "0"); } catch (e) {}
+  $("shotBtn").classList.toggle("on", showShot);
+  fillShot($("shot"), view[cur] && !view[cur].error ? view[cur] : null);
+}
+watchShot($("shot"), $("mainImg"));
+$("shotBtn").classList.toggle("on", showShot); $("shotBtn").onclick = toggleShot;
 
 // ---------- updates ----------
 async function checkUpdate(force) {
